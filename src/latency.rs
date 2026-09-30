@@ -30,7 +30,7 @@ impl ProbeRoute {
             .ok()
             .and_then(|table| default_uplink(&table, tun_name));
         if bind_device.is_none() {
-            tracing::warn!("TUN is up but no physical default route was found; latency may read ~0 ms");
+            log::warn!("TUN is up but no physical default route was found; latency may read ~0 ms");
         }
         Self { bind_device }
     }
@@ -48,7 +48,7 @@ impl ProbeRoute {
         if let (Some(dev), SocketAddr::V4(_)) = (&self.bind_device, addr)
             && let Err(e) = socket.bind_device(Some(dev.as_bytes()))
         {
-            tracing::debug!("SO_BINDTODEVICE {dev} failed: {e}");
+            log::debug!("SO_BINDTODEVICE {dev} failed: {e}");
         }
         let target = SockAddr::from(addr);
         let start = Instant::now();
