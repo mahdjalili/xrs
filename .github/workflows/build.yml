@@ -91,3 +91,43 @@ jobs:
           name: xrs-${{ matrix.target }}
           path: dist/*.tar.gz*
           retention-days: 14
+
+  release:
+    name: release (${{ github.ref_name }})
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ls -lh release-assets/
+          cat > release-assets/RELEASE_NOTES.md <<'EOF'
+          ## xrs - Linux builds
+
+          Each `.tar.gz` contains the `xrs` binary, README and LICENSE.
+
+          Verify a download with [cosign](https://docs.sigstore.dev/cosign/installation/):
+
+          ```bash
+          cosign verify-blob \
+            --certificate-identity-regexp '^https://github.com/mahdjalili/xrs' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --cert <file>.tar.gz.pem \
+            --signature <file>.tar.gz.sig \
+            <file>.tar.gz
+          ```
+          EOF
+          gh release create "${GITHUB_REF_NAME}" release-assets/xrs-* \
+            --title "xrs ${GITHUB_REF_NAME}" \
+            --notes-file release-assets/RELEASE_NOTES.md
