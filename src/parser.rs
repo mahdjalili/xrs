@@ -3,7 +3,7 @@ use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_S
 use base64::Engine;
 use percent_encoding::percent_decode_str;
 use std::collections::{HashMap, HashSet};
-use url::{Host, Url};
+use crate::uri::Uri;
 
 pub fn decode_base64_flexible(input: &str) -> Option<String> {
     let trimmed = input.trim().replace(['\n', '\r'], "");
@@ -34,16 +34,15 @@ pub fn parse_link(link: &str, subscription_id: Option<String>) -> Option<ProxyNo
 }
 
 pub fn parse_vless(link: &str, sub_id: Option<String>) -> Option<ProxyNode> {
-    let parsed = Url::parse(link).ok()?;
-    let secret = percent_decode(parsed.username());
-    let server = url_host(&parsed)?;
-    let port = parsed.port()?;
+    let parsed = Uri::parse(link)?;
+    let secret = percent_decode(parsed.username);
+    let port = parsed.port?;
     let name = parsed
-        .fragment()
+        .fragment
         .map(percent_decode)
-        .unwrap_or_else(|| format!("{server}:{port}"));
-
-    let query: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+        .unwrap_or_else(|| format!("{}:{port}", parsed.host));
+    let query: HashMap<String, String> = parsed.query_pairs().collect();
+    let server = parsed.host;
 
     let security = query.get("security").cloned().unwrap_or_else(|| "none".to_string());
     let network = query.get("type").cloned().unwrap_or_else(|| "tcp".to_string());
@@ -84,16 +83,15 @@ pub fn parse_vless(link: &str, sub_id: Option<String>) -> Option<ProxyNode> {
 }
 
 pub fn parse_trojan(link: &str, sub_id: Option<String>) -> Option<ProxyNode> {
-    let parsed = Url::parse(link).ok()?;
-    let secret = percent_decode(parsed.username());
-    let server = url_host(&parsed)?;
-    let port = parsed.port()?;
+    let parsed = Uri::parse(link)?;
+    let secret = percent_decode(parsed.username);
+    let port = parsed.port?;
     let name = parsed
-        .fragment()
+        .fragment
         .map(percent_decode)
-        .unwrap_or_else(|| format!("{server}:{port}"));
-
-    let query: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+        .unwrap_or_else(|| format!("{}:{port}", parsed.host));
+    let query: HashMap<String, String> = parsed.query_pairs().collect();
+    let server = parsed.host;
 
     let security = query.get("security").cloned().unwrap_or_else(|| "tls".to_string());
     let network = query.get("type").cloned().unwrap_or_else(|| "tcp".to_string());
@@ -247,16 +245,6 @@ pub fn parse_subscription_text(text: &str, sub_id: &str) -> Vec<ProxyNode> {
 
 fn percent_decode(s: &str) -> String {
     percent_decode_str(s).decode_utf8_lossy().into_owned()
-}
-
-/// IPv6 literals come back from `Url` in brackets, which neither Xray nor
-/// socket resolution accept.
-fn url_host(url: &Url) -> Option<String> {
-    Some(match url.host()? {
-        Host::Ipv6(ip) => ip.to_string(),
-        Host::Ipv4(ip) => ip.to_string(),
-        Host::Domain(d) => percent_decode(d),
-    })
 }
 
 /// Parses `host:port`, tolerating `[v6]:port` and SIP002's trailing

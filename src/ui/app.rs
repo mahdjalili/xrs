@@ -4,6 +4,7 @@ use crate::latency::ProbeRoute;
 use crate::model::{AppConfig, ProxyNode};
 use crate::storage::{add_single_node, load_config, save_config, setup_iran_rule_preset};
 use crate::theme::Theme;
+use crate::uri::Uri;
 use crate::xray::XrayRunner;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -660,10 +661,7 @@ impl App {
                     self.notify(ToastLevel::Warning, "A subscription sync is already running");
                     return;
                 }
-                let name = url::Url::parse(&link)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_string))
-                    .unwrap_or_else(|| "Subscription".to_string());
+                let name = Uri::parse(&link).map(|u| u.host_str()).unwrap_or_else(|| "Subscription".to_string());
                 self.sub_busy = true;
                 self.tab = Tab::Subscriptions;
                 tasks::spawn_add_subscription(self.tx.clone(), self.cfg.clone(), link, name);
