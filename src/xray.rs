@@ -263,6 +263,29 @@ fn build_node_outbound(node: &ProxyNode, tun_enabled: bool) -> Value {
             grpc["serviceName"] = json!(svc);
         }
         stream_settings["grpcSettings"] = grpc;
+    } else if let Some(key) = match node.network.as_str() {
+        "xhttp" => Some("xhttpSettings"),
+        "splithttp" => Some("splithttpSettings"),
+        "httpupgrade" => Some("httpupgradeSettings"),
+        _ => None,
+    } {
+        let mut settings = json!({});
+        if let Some(ref path) = node.path {
+            settings["path"] = json!(path);
+        }
+        if let Some(ref host) = node.host {
+            settings["host"] = json!(host);
+        }
+        stream_settings[key] = settings;
+    } else if node.network == "h2" || node.network == "http" {
+        let mut h2 = json!({});
+        if let Some(ref path) = node.path {
+            h2["path"] = json!(path);
+        }
+        if let Some(ref host) = node.host {
+            h2["host"] = json!(host.split(',').map(str::trim).collect::<Vec<_>>());
+        }
+        stream_settings["httpSettings"] = h2;
     }
 
     match node.protocol {
@@ -845,6 +868,26 @@ pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_based_transports_keep_path_and_host() {
+        let mut node = crate::parser::parse_link(
+            "vless://uuid@example.com:443?type=xhttp&security=tls&path=%2Fup&host=cdn.example.com#x",
+            None,
+        )
+        .expect("valid link");
+        let out = build_node_outbound(&node, false);
+        assert_eq!(out["streamSettings"]["xhttpSettings"]["path"], "/up");
+        assert_eq!(out["streamSettings"]["xhttpSettings"]["host"], "cdn.example.com");
+
+        node.network = "httpupgrade".to_string();
+        let out = build_node_outbound(&node, false);
+        assert_eq!(out["streamSettings"]["httpupgradeSettings"]["path"], "/up");
+
+        node.network = "h2".to_string();
+        let out = build_node_outbound(&node, false);
+        assert_eq!(out["streamSettings"]["httpSettings"]["host"][0], "cdn.example.com");
+    }
 
     #[test]
     fn custom_routes_honor_every_section() {
