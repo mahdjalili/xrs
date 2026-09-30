@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 pub fn find_xray_binary() -> Option<PathBuf> {
     // 1. Check local data dir
@@ -103,53 +104,11 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
     let mut rules = Vec::new();
 
     // Custom user rules from ~/.config/xrs/routes.json if present
-    let custom_routes_path = get_config_dir().join("routes.json");
-    if custom_routes_path.exists()
-        && let Ok(content) = fs::read_to_string(&custom_routes_path)
-            && let Ok(custom_val) = serde_json::from_str::<Value>(&content) {
-                if let Some(arr) = custom_val.as_array() {
-                    for r in arr {
-                        rules.push(r.clone());
-                    }
-                } else if let Some(obj) = custom_val.as_object() {
-                    if let Some(direct) = obj.get("direct") {
-                        if let Some(domains) = direct.get("domains").and_then(|d| d.as_array())
-                            && !domains.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "direct",
-                                    "domain": domains
-                                }));
-                            }
-                        if let Some(ips) = direct.get("ips").and_then(|d| d.as_array())
-                            && !ips.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "direct",
-                                    "ip": ips
-                                }));
-                            }
-                    }
-                    if let Some(block) = obj.get("block") {
-                        if let Some(domains) = block.get("domains").and_then(|d| d.as_array())
-                            && !domains.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "block",
-                                    "domain": domains
-                                }));
-                            }
-                        if let Some(ips) = block.get("ips").and_then(|d| d.as_array())
-                            && !ips.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "block",
-                                    "ip": ips
-                                }));
-                            }
-                    }
-                }
-            }
+    if let Ok(content) = fs::read_to_string(get_config_dir().join("routes.json"))
+        && let Ok(custom_val) = serde_json::from_str::<Value>(&content)
+    {
+        rules.extend(custom_route_rules(&custom_val));
+    }
 
     // Configured Routing Rules from cfg.routing.rules
     for rule in &cfg.routing.rules {
@@ -221,6 +180,28 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
     })
 }
 
+/// Accepts either a raw array of Xray rules or the `{direct, proxy, block}`
+/// shorthand written by `ensure_directories`.
+fn custom_route_rules(custom: &Value) -> Vec<Value> {
+    if let Some(arr) = custom.as_array() {
+        return arr.clone();
+    }
+    let mut rules = Vec::new();
+    for tag in ["direct", "proxy", "block"] {
+        let Some(section) = custom.get(tag) else {
+            continue;
+        };
+        for (key, field) in [("domains", "domain"), ("ips", "ip")] {
+            if let Some(list) = section.get(key).and_then(Value::as_array)
+                && !list.is_empty()
+            {
+                rules.push(json!({ "type": "field", "outboundTag": tag, field: list }));
+            }
+        }
+    }
+    rules
+}
+
 fn build_node_outbound(node: &ProxyNode, tun_enabled: bool) -> Value {
     let mut stream_settings = json!({
         "network": node.network,
@@ -282,6 +263,29 @@ fn build_node_outbound(node: &ProxyNode, tun_enabled: bool) -> Value {
             grpc["serviceName"] = json!(svc);
         }
         stream_settings["grpcSettings"] = grpc;
+    } else if let Some(key) = match node.network.as_str() {
+        "xhttp" => Some("xhttpSettings"),
+        "splithttp" => Some("splithttpSettings"),
+        "httpupgrade" => Some("httpupgradeSettings"),
+        _ => None,
+    } {
+        let mut settings = json!({});
+        if let Some(ref path) = node.path {
+            settings["path"] = json!(path);
+        }
+        if let Some(ref host) = node.host {
+            settings["host"] = json!(host);
+        }
+        stream_settings[key] = settings;
+    } else if node.network == "h2" || node.network == "http" {
+        let mut h2 = json!({});
+        if let Some(ref path) = node.path {
+            h2["path"] = json!(path);
+        }
+        if let Some(ref host) = node.host {
+            h2["host"] = json!(host.split(',').map(str::trim).collect::<Vec<_>>());
+        }
+        stream_settings["httpSettings"] = h2;
     }
 
     match node.protocol {
@@ -396,16 +400,13 @@ impl XrayRunner {
 
     pub fn get_running_pid() -> Option<u32> {
         let pf = Self::pid_file();
-        if pf.exists()
-            && let Ok(content) = fs::read_to_string(&pf)
-                && let Ok(pid) = content.trim().parse::<u32>() {
-                    if Path::new(&format!("/proc/{pid}")).exists() {
-                        return Some(pid);
-                    } else {
-                        let _ = fs::remove_file(&pf);
-                    }
-                }
-        None
+        let pid = fs::read_to_string(&pf).ok()?.trim().parse::<u32>().ok()?;
+        if is_our_xray(pid, &Self::config_file()) {
+            Some(pid)
+        } else {
+            let _ = fs::remove_file(&pf);
+            None
+        }
     }
 
     pub fn is_running() -> bool {
@@ -417,11 +418,13 @@ impl XrayRunner {
             return Ok(pid);
         }
 
-        let node = if let Some(ref id) = cfg.active_node_id {
-            cfg.nodes.iter().find(|n| &n.id == id)
-        } else {
-            cfg.nodes.first()
-        };
+        // A dangling active id (e.g. the node vanished in a subscription
+        // update) falls back to the first node instead of refusing to start.
+        let node = cfg
+            .active_node_id
+            .as_ref()
+            .and_then(|id| cfg.nodes.iter().find(|n| &n.id == id))
+            .or_else(|| cfg.nodes.first());
 
         let node = node.ok_or_else(|| "No proxy node available. Add a subscription or single config first.".to_string())?;
 
@@ -451,7 +454,7 @@ impl XrayRunner {
 
         let asset_dir = get_data_dir();
 
-        let child = Command::new(&xray_bin)
+        let mut child = Command::new(&xray_bin)
             .arg("run")
             .arg("-c")
             .arg(&cfg_path)
@@ -462,12 +465,29 @@ impl XrayRunner {
             .map_err(|e| format!("Failed to spawn Xray process: {e}"))?;
 
         let pid = child.id();
+
+        // Xray validates its config and loads geo data at startup, exiting
+        // immediately on errors; catch that instead of reporting "connected".
+        let deadline = Instant::now() + STARTUP_GRACE;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(format!("Xray exited during startup ({status}): {}", log_tail()));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
         let _ = fs::write(Self::pid_file(), pid.to_string());
 
-        // Apply TUN routing or system proxy
+        // Reap the child when it exits. In a long-lived parent such as the TUI
+        // an unreaped child lingers as a zombie that still looks "running".
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+
         if cfg.tun.enabled {
-            if let Err(e) = apply_tun_routing(&cfg.tun.name, true) {
-                tracing::warn!("Failed to apply TUN routing: {e}");
+            if let Err(e) = apply_tun_routing(&cfg.tun.name, cfg.tun.mtu, true) {
+                let _ = Self::stop();
+                return Err(format!("TUN routing failed: {e}. Run 'xrs setup-tun' once to allow it."));
             }
         } else {
             set_system_proxy(true, cfg.inbounds.socks_port, cfg.inbounds.http_port);
@@ -478,15 +498,20 @@ impl XrayRunner {
 
     pub fn stop() -> Result<(), String> {
         if let Some(pid) = Self::get_running_pid() {
-            let _ = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .status();
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            let pid_s = pid.to_string();
+            let _ = Command::new("kill").args(["-TERM", &pid_s]).status();
+            let deadline = Instant::now() + STOP_GRACE;
+            while is_our_xray(pid, &Self::config_file()) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if is_our_xray(pid, &Self::config_file()) {
+                let _ = Command::new("kill").args(["-KILL", &pid_s]).status();
+            }
             let _ = fs::remove_file(Self::pid_file());
         }
 
         // Remove TUN routing and disable system proxy
-        let _ = apply_tun_routing("xrs-tun", false);
+        let _ = apply_tun_routing("xrs-tun", 0, false);
         set_system_proxy(false, 10808, 10809);
         Ok(())
     }
@@ -496,6 +521,38 @@ impl XrayRunner {
         std::thread::sleep(std::time::Duration::from_millis(150));
         Self::start(cfg)
     }
+}
+
+const STARTUP_GRACE: Duration = Duration::from_millis(400);
+const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// PID files outlive reboots and crashes, so the recorded PID may since have
+/// been reused by an unrelated process or be a zombie. Only a live process
+/// running our generated config counts; otherwise `stop` could kill a
+/// stranger.
+fn is_our_xray(pid: u32, config: &Path) -> bool {
+    let proc_dir = PathBuf::from(format!("/proc/{pid}"));
+    let Ok(stat) = fs::read_to_string(proc_dir.join("stat")) else {
+        return false;
+    };
+    // The state field follows the parenthesised command name, which may itself contain spaces.
+    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next());
+    if !matches!(state, Some(s) if s != "Z" && s != "X") {
+        return false;
+    }
+    let Ok(cmdline) = fs::read(proc_dir.join("cmdline")) else {
+        return false;
+    };
+    let config = config.to_string_lossy();
+    cmdline
+        .split(|b| *b == 0)
+        .any(|arg| String::from_utf8_lossy(arg) == config)
+}
+
+fn log_tail() -> String {
+    let log = fs::read_to_string(get_data_dir().join("xray.log")).unwrap_or_default();
+    let line = log.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("see xray.log");
+    line.chars().take(240).collect()
 }
 
 pub fn check_or_setup_tun_caps(xray_path: &Path) -> Result<(), String> {
@@ -542,7 +599,7 @@ struct TunCmd {
     allow_failure: bool,
 }
 
-fn tun_up_commands(ifname: &str) -> Vec<TunCmd> {
+fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
     vec![
         TunCmd {
             prog: "/usr/bin/ip",
@@ -553,7 +610,7 @@ fn tun_up_commands(ifname: &str) -> Vec<TunCmd> {
                 ifname.to_string(),
                 "up".to_string(),
                 "mtu".to_string(),
-                "1500".to_string(),
+                mtu.to_string(),
             ],
             allow_failure: false,
         },
@@ -661,11 +718,11 @@ fn tun_down_commands() -> Vec<TunCmd> {
     ]
 }
 
-fn tun_batch_shell(ifname: &str, up: bool) -> String {
+fn tun_batch_shell(ifname: &str, mtu: u32, up: bool) -> String {
     if up {
         format!(
             r#"for i in $(seq 1 20); do ip link show "{ifname}" >/dev/null 2>&1 && break; sleep 0.1; done
-ip link set dev "{ifname}" up mtu 1500
+ip link set dev "{ifname}" up mtu {mtu}
 ip addr replace {addr} dev "{ifname}"
 ip route replace default dev "{ifname}" table {table}
 ip rule del not fwmark {mark} table {table} 2>/dev/null || true
@@ -675,6 +732,7 @@ sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null
 sysctl -w net.ipv4.conf."{ifname}".rp_filter=2 >/dev/null 2>&1 || true
 "#,
             ifname = ifname,
+            mtu = mtu,
             addr = TUN_ADDR,
             table = TUN_TABLE,
             mark = TUN_MARK,
@@ -700,7 +758,7 @@ fn try_sudo(program: &str, args: &[String]) -> bool {
     }
 }
 
-pub fn apply_tun_routing(tun_name: &str, up: bool) -> Result<(), String> {
+pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), String> {
     if !is_valid_ifname(tun_name) {
         return Err("Invalid TUN interface name".to_string());
     }
@@ -725,7 +783,7 @@ pub fn apply_tun_routing(tun_name: &str, up: bool) -> Result<(), String> {
     // from `xrs setup-tun` covers every command. Tolerant commands (stale
     // rule cleanup) ignore failure and continue.
     let commands = if up {
-        tun_up_commands(tun_name)
+        tun_up_commands(tun_name, mtu)
     } else {
         tun_down_commands()
     };
@@ -741,7 +799,7 @@ pub fn apply_tun_routing(tun_name: &str, up: bool) -> Result<(), String> {
     }
 
     // Slow path: single elevated shell (exactly one auth prompt).
-    let batch = tun_batch_shell(tun_name, up);
+    let batch = tun_batch_shell(tun_name, mtu, up);
     match Command::new("pkexec").args(["sh", "-c", &batch]).status() {
         Ok(status) if status.success() => Ok(()),
         Ok(_) => Err("Elevated permissions rejected for TUN routing".to_string()),
@@ -804,5 +862,77 @@ pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
         let _ = Command::new("gsettings")
             .args(["set", "org.gnome.system.proxy", "mode", "none"])
             .output();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_based_transports_keep_path_and_host() {
+        let mut node = crate::parser::parse_link(
+            "vless://uuid@example.com:443?type=xhttp&security=tls&path=%2Fup&host=cdn.example.com#x",
+            None,
+        )
+        .expect("valid link");
+        let out = build_node_outbound(&node, false);
+        assert_eq!(out["streamSettings"]["xhttpSettings"]["path"], "/up");
+        assert_eq!(out["streamSettings"]["xhttpSettings"]["host"], "cdn.example.com");
+
+        node.network = "httpupgrade".to_string();
+        let out = build_node_outbound(&node, false);
+        assert_eq!(out["streamSettings"]["httpupgradeSettings"]["path"], "/up");
+
+        node.network = "h2".to_string();
+        let out = build_node_outbound(&node, false);
+        assert_eq!(out["streamSettings"]["httpSettings"]["host"][0], "cdn.example.com");
+    }
+
+    #[test]
+    fn custom_routes_honor_every_section() {
+        let rules = custom_route_rules(&json!({
+            "direct": { "domains": ["domain:local"], "ips": [] },
+            "proxy": { "domains": ["domain:example.com"], "ips": ["1.2.3.4"] },
+            "block": { "domains": [], "ips": [] }
+        }));
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[1]["outboundTag"], "proxy");
+        assert_eq!(rules[1]["domain"][0], "domain:example.com");
+        assert_eq!(rules[2]["ip"][0], "1.2.3.4");
+
+        let raw = json!([{ "type": "field", "outboundTag": "direct", "port": "53" }]);
+        assert_eq!(custom_route_rules(&raw), raw.as_array().cloned().unwrap_or_default());
+    }
+
+    #[test]
+    fn process_check_matches_only_live_processes_running_our_config() {
+        let marker = "/tmp/xrs-test-run.json";
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30", "sh", marker])
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id();
+        // cmdline only reflects the new argv once exec has completed.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !is_our_xray(pid, Path::new(marker)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(is_our_xray(pid, Path::new(marker)));
+        assert!(!is_our_xray(pid, Path::new("/tmp/some-other-config.json")));
+
+        let _ = child.kill();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!is_our_xray(pid, Path::new(marker)), "zombie must not count as running");
+
+        let _ = child.wait();
+        assert!(!is_our_xray(pid, Path::new(marker)));
+    }
+
+    #[test]
+    fn tun_setup_uses_configured_mtu() {
+        let cmds = tun_up_commands("xrs-tun", 1400);
+        assert!(cmds[0].args.iter().any(|a| a == "1400"));
+        assert!(tun_batch_shell("xrs-tun", 1400, true).contains("mtu 1400"));
     }
 }

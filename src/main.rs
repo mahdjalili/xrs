@@ -235,9 +235,14 @@ async fn main() -> Result<()> {
                 Ok(pid) => {
                     info!("xrs daemon running (PID: {pid})");
                     println!("✔ xrs running in foreground (PID: {pid}). Press Ctrl+C to stop.");
-                    let _ = tokio::signal::ctrl_c().await;
+                    let xray_died = supervise().await;
                     println!("\nShutting down xrs...");
                     let _ = XrayRunner::stop();
+                    if xray_died {
+                        error!("Xray exited unexpectedly; see xray.log");
+                        eprintln!("✖ Xray exited unexpectedly; see {}", get_data_dir().join("xray.log").display());
+                        std::process::exit(1);
+                    }
                     info!("xrs shutdown cleanly");
                 }
                 Err(e) => {
@@ -253,10 +258,12 @@ async fn main() -> Result<()> {
                 let service_dir = home.join(".config/systemd/user");
                 std::fs::create_dir_all(&service_dir)?;
                 let service_file = service_dir.join("xrs.service");
-                let bin_path = home.join(".local/bin/xrs");
+                let bin_path = std::env::current_exe()
+                    .and_then(|p| p.canonicalize())
+                    .unwrap_or_else(|_| home.join(".local/bin/xrs"));
 
                 let unit_content = format!(
-                    "[Unit]\nDescription=xrs - an xray cli first ultra fast lightweight client\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} run\nRestart=on-failure\nRestartSec=3s\n\n[Install]\nWantedBy=default.target\n",
+                    "[Unit]\nDescription=xrs - an xray cli first ultra fast lightweight client\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=\"{}\" run\nRestart=on-failure\nRestartSec=3s\n\n[Install]\nWantedBy=default.target\n",
                     bin_path.display()
                 );
 
@@ -775,6 +782,35 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Waits until the daemon should shut down. Returns `true` if Xray died on
+/// its own, so the caller can exit non-zero and let systemd's
+/// `Restart=on-failure` bring it back.
+///
+/// SIGTERM must be handled as well as Ctrl-C: it is what `systemctl stop`
+/// sends, and dying without cleanup leaves TUN policy routing pointing at a
+/// vanished interface, which black-holes all traffic.
+async fn supervise() -> bool {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).ok();
+    let mut health = tokio::time::interval(std::time::Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return false,
+            _ = async {
+                match term.as_mut() {
+                    Some(t) => { t.recv().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => return false,
+            _ = health.tick() => {
+                if !XrayRunner::is_running() {
+                    return true;
+                }
+            }
+        }
+    }
 }
 
 fn prompt_confirm(prompt: &str) -> bool {
