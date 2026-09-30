@@ -1,5 +1,6 @@
 use super::input::TextInput;
 use super::tasks::{self, ConnOp, PingTarget, TaskEvent};
+use crate::latency::ProbeRoute;
 use crate::model::{AppConfig, ProxyNode};
 use crate::storage::{add_single_node, load_config, save_config, setup_iran_rule_preset};
 use crate::theme::Theme;
@@ -592,7 +593,7 @@ impl App {
         }
         self.ping_total = targets.len();
         self.ping_done = 0;
-        tasks::spawn_ping(self.tx.clone(), targets);
+        tasks::spawn_ping(self.tx.clone(), targets, ProbeRoute::detect(&self.cfg.tun.name));
     }
 
     fn update_subscriptions(&mut self) {
