@@ -398,7 +398,7 @@ impl App {
             self.last_status_check = Instant::now();
         }
         if self.last_theme_check.elapsed() >= THEME_REFRESH {
-            self.theme = Theme::load();
+            self.theme.refresh();
             self.last_theme_check = Instant::now();
         }
         if self.toast.as_ref().is_some_and(|t| t.created.elapsed() >= t.ttl()) {
