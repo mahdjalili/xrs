@@ -83,6 +83,7 @@ pub struct RouteRule {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InboundConfig {
     pub socks_port: u16,
     pub http_port: u16,
@@ -90,6 +91,7 @@ pub struct InboundConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TunConfig {
     pub enabled: bool,
     pub name: String,
@@ -111,13 +113,16 @@ impl Default for TunConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoutingConfig {
     pub domain_strategy: String, // "IPIfNonMatch", "AsIs"
     pub rules: Vec<RouteRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+/// Every section falls back to its default when missing so configs written by
+/// older or newer versions still load instead of being reset.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct AppConfig {
     pub inbounds: InboundConfig,
     pub tun: TunConfig,
