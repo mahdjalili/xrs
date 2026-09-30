@@ -47,7 +47,7 @@ BarWidget {
     text: "󰖂"
     active: root.running
     dimmed: !root.running
-    tooltipText: root.running ? "xrs · Connected (" + root.activeNode + ")" : "xrs · Disconnected"
+    tooltipText: root.running ? "Connected (" + root.activeNode + ")" : "Disconnected"
 
     onPressed: function(mouseButton) {
       if (mouseButton === Qt.LeftButton) root.togglePanel()
