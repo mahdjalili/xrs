@@ -82,7 +82,7 @@ pub fn load_config() -> AppConfig {
             let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             let backup = config_file.with_extension(format!("json.broken-{ts}"));
             let _ = fs::copy(&config_file, &backup);
-            tracing::error!("Config {} is unreadable ({e}); saved a copy to {}", config_file.display(), backup.display());
+            log::error!("Config {} is unreadable ({e}); saved a copy to {}", config_file.display(), backup.display());
             AppConfig::default()
         }
     }
