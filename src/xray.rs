@@ -104,53 +104,11 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
     let mut rules = Vec::new();
 
     // Custom user rules from ~/.config/xrs/routes.json if present
-    let custom_routes_path = get_config_dir().join("routes.json");
-    if custom_routes_path.exists()
-        && let Ok(content) = fs::read_to_string(&custom_routes_path)
-            && let Ok(custom_val) = serde_json::from_str::<Value>(&content) {
-                if let Some(arr) = custom_val.as_array() {
-                    for r in arr {
-                        rules.push(r.clone());
-                    }
-                } else if let Some(obj) = custom_val.as_object() {
-                    if let Some(direct) = obj.get("direct") {
-                        if let Some(domains) = direct.get("domains").and_then(|d| d.as_array())
-                            && !domains.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "direct",
-                                    "domain": domains
-                                }));
-                            }
-                        if let Some(ips) = direct.get("ips").and_then(|d| d.as_array())
-                            && !ips.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "direct",
-                                    "ip": ips
-                                }));
-                            }
-                    }
-                    if let Some(block) = obj.get("block") {
-                        if let Some(domains) = block.get("domains").and_then(|d| d.as_array())
-                            && !domains.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "block",
-                                    "domain": domains
-                                }));
-                            }
-                        if let Some(ips) = block.get("ips").and_then(|d| d.as_array())
-                            && !ips.is_empty() {
-                                rules.push(json!({
-                                    "type": "field",
-                                    "outboundTag": "block",
-                                    "ip": ips
-                                }));
-                            }
-                    }
-                }
-            }
+    if let Ok(content) = fs::read_to_string(get_config_dir().join("routes.json"))
+        && let Ok(custom_val) = serde_json::from_str::<Value>(&content)
+    {
+        rules.extend(custom_route_rules(&custom_val));
+    }
 
     // Configured Routing Rules from cfg.routing.rules
     for rule in &cfg.routing.rules {
@@ -220,6 +178,28 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
             "rules": rules
         }
     })
+}
+
+/// Accepts either a raw array of Xray rules or the `{direct, proxy, block}`
+/// shorthand written by `ensure_directories`.
+fn custom_route_rules(custom: &Value) -> Vec<Value> {
+    if let Some(arr) = custom.as_array() {
+        return arr.clone();
+    }
+    let mut rules = Vec::new();
+    for tag in ["direct", "proxy", "block"] {
+        let Some(section) = custom.get(tag) else {
+            continue;
+        };
+        for (key, field) in [("domains", "domain"), ("ips", "ip")] {
+            if let Some(list) = section.get(key).and_then(Value::as_array)
+                && !list.is_empty()
+            {
+                rules.push(json!({ "type": "field", "outboundTag": tag, field: list }));
+            }
+        }
+    }
+    rules
 }
 
 fn build_node_outbound(node: &ProxyNode, tun_enabled: bool) -> Value {
@@ -865,6 +845,22 @@ pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_routes_honor_every_section() {
+        let rules = custom_route_rules(&json!({
+            "direct": { "domains": ["domain:local"], "ips": [] },
+            "proxy": { "domains": ["domain:example.com"], "ips": ["1.2.3.4"] },
+            "block": { "domains": [], "ips": [] }
+        }));
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[1]["outboundTag"], "proxy");
+        assert_eq!(rules[1]["domain"][0], "domain:example.com");
+        assert_eq!(rules[2]["ip"][0], "1.2.3.4");
+
+        let raw = json!([{ "type": "field", "outboundTag": "direct", "port": "53" }]);
+        assert_eq!(custom_route_rules(&raw), raw.as_array().cloned().unwrap_or_default());
+    }
 
     #[test]
     fn process_check_matches_only_live_processes_running_our_config() {

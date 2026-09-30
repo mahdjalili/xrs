@@ -29,37 +29,44 @@ pub fn ensure_directories() -> std::io::Result<()> {
     fs::create_dir_all(get_config_dir())?;
     fs::create_dir_all(get_data_dir())?;
 
-    // Create a default routes.json if not present
+    // Earlier releases shipped a sample that blocked ads unconditionally,
+    // overriding the AdBlock toggle; replace it only if the user never edited it.
     let routes_file = get_config_dir().join("routes.json");
-    if !routes_file.exists() {
-        let sample_routes = serde_json::json!({
-            "description": "Custom routing rules for OmaXray. Rules here are prepended to Xray routing.",
-            "direct": {
-                "domains": [
-                    "domain:local",
-                    "domain:internal"
-                ],
-                "ips": [
-                    "geoip:private"
-                ]
-            },
-            "proxy": {
-                "domains": [],
-                "ips": []
-            },
-            "block": {
-                "domains": [
-                    "geosite:category-ads-all"
-                ],
-                "ips": []
-            }
-        });
-        if let Ok(content) = serde_json::to_string_pretty(&sample_routes) {
-            let _ = fs::write(&routes_file, content);
-        }
+    let is_legacy_sample = fs::read_to_string(&routes_file)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .is_some_and(|v| v == legacy_sample_routes());
+    if (!routes_file.exists() || is_legacy_sample)
+        && let Ok(content) = serde_json::to_string_pretty(&sample_routes())
+    {
+        let _ = fs::write(&routes_file, content);
     }
 
     Ok(())
+}
+
+fn sample_routes() -> serde_json::Value {
+    serde_json::json!({
+        "description": "Custom routing rules for xrs. Rules here are prepended to Xray routing. Ad blocking is controlled by the AdBlock rule in the TUI.",
+        "direct": {
+            "domains": ["domain:local", "domain:internal"],
+            "ips": ["geoip:private"]
+        },
+        "proxy": { "domains": [], "ips": [] },
+        "block": { "domains": [], "ips": [] }
+    })
+}
+
+fn legacy_sample_routes() -> serde_json::Value {
+    serde_json::json!({
+        "description": "Custom routing rules for OmaXray. Rules here are prepended to Xray routing.",
+        "direct": {
+            "domains": ["domain:local", "domain:internal"],
+            "ips": ["geoip:private"]
+        },
+        "proxy": { "domains": [], "ips": [] },
+        "block": { "domains": ["geosite:category-ads-all"], "ips": [] }
+    })
 }
 
 pub fn load_config() -> AppConfig {
