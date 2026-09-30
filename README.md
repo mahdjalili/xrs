@@ -13,10 +13,13 @@ xrs is a blazing-fast proxy client built on Xray-core. It lives in your terminal
 
 | | xrs | Typical GUI clients |
 |---|---|---|
-| Binary size | **~3.4 MB** | 100–300 MB |
-| Idle memory (TUI) | **~5 MB** | 200–350 MB |
-| Status check | **~4 ms** | n/a |
-| Dependencies | **None** (single static binary) | Qt / Electron runtimes |
+| Binary size | **~3.5 MB** | 100–300 MB |
+| Idle memory (TUI, 200 servers) | **~6 MB** | 200–350 MB |
+| Idle CPU (TUI) | **~0.2%** | n/a |
+| Status check (`xrs status`) | **~2 ms** | n/a |
+| Dependencies | **None** (one binary, needs only glibc) | Qt / Electron runtimes |
+
+<sub>xrs figures measured for v0.2.0 on x86_64 Linux with the stripped release build: memory is resident set size, idle CPU was sampled over 20 s, and status check time is the hyperfine mean of 300 runs. The TUI peaks at ~7 MB while latency-testing 200 servers.</sub>
 
 ## Features
 
