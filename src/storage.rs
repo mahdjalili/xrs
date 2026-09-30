@@ -3,22 +3,25 @@ use crate::parser::{parse_link, parse_subscription_text};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn get_config_dir() -> PathBuf {
-    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let new_dir = home.join(".config/xrs");
-    let old_dir = home.join(".config/omaxray");
-    if !new_dir.exists() && old_dir.exists() {
-        let _ = fs::rename(&old_dir, &new_dir);
-    }
-    new_dir
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| migrated_dir(".config/xrs", ".config/omaxray")).clone()
 }
 
 pub fn get_data_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| migrated_dir(".local/share/xrs", ".local/share/omaxray")).clone()
+}
+
+/// Resolved once per process: the TUI asks for these paths several times a
+/// second, and the legacy-name migration only matters on first use.
+fn migrated_dir(new: &str, old: &str) -> PathBuf {
     let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let new_dir = home.join(".local/share/xrs");
-    let old_dir = home.join(".local/share/omaxray");
+    let new_dir = home.join(new);
+    let old_dir = home.join(old);
     if !new_dir.exists() && old_dir.exists() {
         let _ = fs::rename(&old_dir, &new_dir);
     }
