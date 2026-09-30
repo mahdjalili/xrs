@@ -26,8 +26,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             arch: x86_64
+            pkgarch: amd64
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
+            pkgarch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,7 +64,7 @@ jobs:
           else
             pkgver="0.0.0-dev-${GITHUB_SHA::7}"
           fi
-          pkgname="xrs-${pkgver}-${{ matrix.target }}"
+          pkgname="xrs-${pkgver}-linux-${{ matrix.pkgarch }}"
           mkdir -p "dist/${pkgname}"
           cp "target/${{ matrix.target }}/release/xrs" "dist/${pkgname}/"
           cp README.md LICENSE "dist/${pkgname}/"
@@ -88,7 +90,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: xrs-${{ matrix.target }}
+          name: xrs-linux-${{ matrix.pkgarch }}
           path: dist/*.tar.gz*
           retention-days: 14
 
@@ -133,6 +135,10 @@ jobs:
             <file>.tar.gz
           ```
           EOF
-          gh release create "${GITHUB_REF_NAME}" release-assets/xrs-* \
-            --title "xrs ${GITHUB_REF_NAME}" \
-            --notes-file release-assets/RELEASE_NOTES.md
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release-assets/xrs-* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" release-assets/xrs-* \
+              --title "xrs ${GITHUB_REF_NAME}" \
+              --notes-file release-assets/RELEASE_NOTES.md
+          fi
