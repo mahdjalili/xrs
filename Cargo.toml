@@ -2,6 +2,10 @@
 name = "xrs"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["Mahdi <mahdiwise@gmail.com>"]
+description = "xrs - an xray cli-first ultra fast lightweight client"
+repository = "https://github.com/mahdjalili/xrs"
 
 [dependencies]
 base64 = "0.23.1"
