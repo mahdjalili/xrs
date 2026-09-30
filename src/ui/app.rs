@@ -937,22 +937,43 @@ fn edit_input(input: &mut TextInput, key: KeyEvent) {
     }
 }
 
+/// `term` is already lowercase.
 fn node_matches(node: &ProxyNode, term: &str) -> bool {
     [
         node.name.as_str(),
         node.server.as_str(),
         node.network.as_str(),
         node.security.as_str(),
+        node.protocol.label(),
     ]
     .iter()
-    .any(|f| f.to_lowercase().contains(term))
-        || node.protocol.to_string().to_lowercase().contains(term)
+    .any(|f| contains_lowercase(f, term))
+}
+
+/// `haystack.to_lowercase().contains(needle)` without allocating for the
+/// common all-ASCII case; this runs for every node on every frame while a
+/// filter is active.
+fn contains_lowercase(haystack: &str, needle: &str) -> bool {
+    if !haystack.is_ascii() {
+        return haystack.to_lowercase().contains(needle);
+    }
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    n.len() <= h.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Protocol;
+
+    #[test]
+    fn lowercase_contains_matches_the_allocating_version() {
+        for hay in ["Germany-01", "VLESS", "آلمان Berlin", "İstanbul", "ÄÖÜ", "", "abc"] {
+            for needle in ["germany", "01", "vl", "آلمان", "berlin", "i̇st", "äö", "x", "abcd", "c"] {
+                assert_eq!(contains_lowercase(hay, needle), hay.to_lowercase().contains(needle), "{hay} / {needle}");
+            }
+        }
+    }
 
     pub fn node(id: &str, name: &str, ping: Option<u64>) -> ProxyNode {
         ProxyNode {
