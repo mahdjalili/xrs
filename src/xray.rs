@@ -869,8 +869,16 @@ mod tests {
     #[test]
     fn process_check_matches_only_live_processes_running_our_config() {
         let marker = "/tmp/xrs-test-run.json";
-        let mut child = Command::new("sleep").args(["30", marker]).spawn().expect("spawn sleep");
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30", "sh", marker])
+            .spawn()
+            .expect("spawn sh");
         let pid = child.id();
+        // cmdline only reflects the new argv once exec has completed.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !is_our_xray(pid, Path::new(marker)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(is_our_xray(pid, Path::new(marker)));
         assert!(!is_our_xray(pid, Path::new("/tmp/some-other-config.json")));
 
