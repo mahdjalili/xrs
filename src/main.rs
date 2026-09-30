@@ -22,7 +22,7 @@ use xray::{check_or_setup_tun_caps, find_xray_binary, install_tun_sudoers, XrayR
 #[command(
     name = "xrs",
     author = "Mahdi",
-    version = "0.1.0",
+    version,
     about = "xrs - an xray cli first ultra fast lightweight client"
 )]
 struct Cli {
