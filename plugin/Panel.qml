@@ -10,7 +10,7 @@ Panel {
   id: root
   moduleName: "xrs"
   ipcTarget: "xrs"
-  manageIpc: true
+  manageIpc: false
 
   property var anchorItem: null
   property var hostWidget: null
