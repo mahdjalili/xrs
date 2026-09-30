@@ -3,22 +3,25 @@ use crate::parser::{parse_link, parse_subscription_text};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn get_config_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let new_dir = home.join(".config/xrs");
-    let old_dir = home.join(".config/omaxray");
-    if !new_dir.exists() && old_dir.exists() {
-        let _ = fs::rename(&old_dir, &new_dir);
-    }
-    new_dir
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| migrated_dir(".config/xrs", ".config/omaxray")).clone()
 }
 
 pub fn get_data_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let new_dir = home.join(".local/share/xrs");
-    let old_dir = home.join(".local/share/omaxray");
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| migrated_dir(".local/share/xrs", ".local/share/omaxray")).clone()
+}
+
+/// Resolved once per process: the TUI asks for these paths several times a
+/// second, and the legacy-name migration only matters on first use.
+fn migrated_dir(new: &str, old: &str) -> PathBuf {
+    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let new_dir = home.join(new);
+    let old_dir = home.join(old);
     if !new_dir.exists() && old_dir.exists() {
         let _ = fs::rename(&old_dir, &new_dir);
     }
@@ -31,12 +34,17 @@ pub fn ensure_directories() -> std::io::Result<()> {
 
     // Earlier releases shipped a sample that blocked ads unconditionally,
     // overriding the AdBlock toggle; replace it only if the user never edited it.
+    // Runs on every command, so the JSON comparison is skipped unless the
+    // file still carries the legacy sample's wording.
     let routes_file = get_config_dir().join("routes.json");
-    let is_legacy_sample = fs::read_to_string(&routes_file)
-        .ok()
-        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-        .is_some_and(|v| v == legacy_sample_routes());
-    if (!routes_file.exists() || is_legacy_sample)
+    let needs_sample = match fs::read_to_string(&routes_file) {
+        Ok(c) => {
+            c.contains("OmaXray")
+                && serde_json::from_str::<serde_json::Value>(&c).is_ok_and(|v| v == legacy_sample_routes())
+        }
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    if needs_sample
         && let Ok(content) = serde_json::to_string_pretty(&sample_routes())
     {
         let _ = fs::write(&routes_file, content);
@@ -82,7 +90,7 @@ pub fn load_config() -> AppConfig {
             let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             let backup = config_file.with_extension(format!("json.broken-{ts}"));
             let _ = fs::copy(&config_file, &backup);
-            tracing::error!("Config {} is unreadable ({e}); saved a copy to {}", config_file.display(), backup.display());
+            log::error!("Config {} is unreadable ({e}); saved a copy to {}", config_file.display(), backup.display());
             AppConfig::default()
         }
     }
