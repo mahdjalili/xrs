@@ -211,4 +211,13 @@ impl Theme {
     pub fn cyan(&self) -> Color {
         hex_to_ratatui(&self.colors.cyan)
     }
+
+    pub fn bright_fg(&self) -> Color {
+        hex_to_ratatui(&self.colors.bright_foreground)
+    }
+
+    /// Text color for labels drawn on top of accent or status fills.
+    pub fn on_accent(&self) -> Color {
+        hex_to_ratatui(&self.colors.darker_background)
+    }
 }
