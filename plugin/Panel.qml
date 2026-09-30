@@ -134,7 +134,7 @@ Panel {
     bar: root.bar
     open: root.opened
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(stickyHeader.implicitHeight + scrollCol.implicitHeight + Style.space(34), Style.space(560))
+    contentHeight: panel.fittedContentHeight(stickyHeader.implicitHeight + scrollCol.implicitHeight + footerCol.implicitHeight + Style.space(44), Style.space(560))
 
     ColumnLayout {
       id: rootCol
@@ -397,6 +397,26 @@ Panel {
           }
         }
 
+        // Status message toast
+        Text {
+          visible: root.statusMsg.length > 0
+          text: root.statusMsg
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          color: Color.accent
+          horizontalAlignment: Text.AlignHCenter
+          width: parent.width
+        }
+        } // scrollCol
+      } // Flickable
+
+      // STICKY footer: quick actions pinned to panel bottom
+      Column {
+        id: footerCol
+        Layout.fillWidth: true
+        spacing: Style.space(8)
+
         PanelSeparator { width: parent.width }
 
         // 4. Quick Actions Row
@@ -414,7 +434,7 @@ Panel {
             RowLayout {
               anchors.centerIn: parent
               spacing: Style.space(4)
-              Text { text: "⚡"; font.family: Style.font.family; font.pixelSize: Style.font.caption }
+              Text { text: "󰓅"; font.family: Style.font.family; font.pixelSize: Style.font.caption; color: Color.accent }
               Text {
                 text: "Ping"
                 font.family: Style.font.family
@@ -443,7 +463,7 @@ Panel {
             RowLayout {
               anchors.centerIn: parent
               spacing: Style.space(4)
-              Text { text: "🔄"; font.family: Style.font.family; font.pixelSize: Style.font.caption }
+              Text { text: "󰑓"; font.family: Style.font.family; font.pixelSize: Style.font.caption; color: Color.accent }
               Text {
                 text: "Update"
                 font.family: Style.font.family
@@ -472,7 +492,7 @@ Panel {
             RowLayout {
               anchors.centerIn: parent
               spacing: Style.space(4)
-              Text { text: "🖥"; font.family: Style.font.family; font.pixelSize: Style.font.caption }
+              Text { text: ""; font.family: Style.font.family; font.pixelSize: Style.font.caption; color: Color.accent }
               Text {
                 text: "TUI"
                 font.family: Style.font.family
@@ -494,20 +514,7 @@ Panel {
             }
           }
         }
-
-        // Status message toast
-        Text {
-          visible: root.statusMsg.length > 0
-          text: root.statusMsg
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          color: Color.accent
-          horizontalAlignment: Text.AlignHCenter
-          width: parent.width
-        }
-        } // scrollCol
-      } // Flickable
+      } // footerCol
     } // rootCol
   } // panel
 } // root
