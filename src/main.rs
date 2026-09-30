@@ -2,6 +2,7 @@
 #![deny(clippy::unwrap_used)]
 
 mod latency;
+mod logging;
 mod model;
 mod parser;
 mod storage;
@@ -15,7 +16,7 @@ use eyre::{eyre, Result};
 use colored::*;
 use model::{AppConfig, RouteRule};
 use storage::*;
-use tracing::{debug, error, info, warn};
+use log::{debug, error, info, warn};
 use xray::{check_or_setup_tun_caps, find_xray_binary, install_tun_sudoers, XrayRunner};
 
 #[derive(Parser)]
@@ -182,7 +183,7 @@ enum NodeAction {
 }
 
 fn main() -> Result<()> {
-    init_logging();
+    logging::init();
 
     let _ = ensure_directories();
     let cli = Cli::parse();
@@ -813,22 +814,6 @@ fn supervise() -> bool {
     }
 }
 
-/// Same `RUST_LOG` syntax as before (`warn`, `xrs=debug,rustls=info`), minus
-/// span/field filters, without pulling a regex engine into the binary.
-fn init_logging() {
-    use tracing_subscriber::filter::{LevelFilter, Targets};
-    use tracing_subscriber::prelude::*;
-
-    let filter = std::env::var("RUST_LOG")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .and_then(|s| s.parse::<Targets>().ok())
-        .unwrap_or_else(|| Targets::new().with_default(LevelFilter::WARN));
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().without_time())
-        .with(filter)
-        .init();
-}
 
 fn prompt_confirm(prompt: &str) -> bool {
     use std::io::Write;
