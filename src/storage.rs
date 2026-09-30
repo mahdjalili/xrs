@@ -214,7 +214,7 @@ fn relocate_node(nodes: &[ProxyNode], prev: &ProxyNode) -> Option<String> {
 
 fn fetch_subscription(url: &str) -> Result<String, String> {
     let resp = ureq::get(url)
-        .header("User-Agent", "xrs/0.1.0 (v2rayN; Clash)")
+        .header("User-Agent", concat!("xrs/", env!("CARGO_PKG_VERSION"), " (v2rayN; Clash)"))
         .call()
         .map_err(|e| format!("Failed to download subscription: {e}"))?;
 
