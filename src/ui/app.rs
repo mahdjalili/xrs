@@ -250,6 +250,11 @@ impl App {
         self.ping_done < self.ping_total
     }
 
+    /// True while a spinner is on screen and needs frame-rate redraws.
+    pub fn animating(&self) -> bool {
+        self.conn_busy.is_some() || self.sub_busy || self.pinging()
+    }
+
     pub fn active_node(&self) -> Option<&ProxyNode> {
         let id = self.cfg.active_node_id.as_deref()?;
         self.cfg.nodes.iter().find(|n| n.id == id)
