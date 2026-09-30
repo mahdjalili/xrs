@@ -12,8 +12,10 @@ use ratatui::DefaultTerminal;
 use std::io;
 use std::time::Duration;
 
-/// Redraw cadence while idle; keeps spinners smooth without busy-looping.
+/// Redraw cadence while a spinner is visible.
 const FRAME: Duration = Duration::from_millis(80);
+/// Redraw cadence otherwise; matches the connection status refresh interval.
+const IDLE_FRAME: Duration = Duration::from_millis(500);
 
 pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::try_init()?;
@@ -39,7 +41,8 @@ fn run(terminal: &mut DefaultTerminal) -> Result<(), Box<dyn std::error::Error>>
     while !app.should_quit {
         app.tick();
         terminal.draw(|f| view::render(&mut app, f))?;
-        if event::poll(FRAME)? {
+        let timeout = if app.animating() { FRAME } else { IDLE_FRAME };
+        if event::poll(timeout)? {
             app.on_event(event::read()?);
             while event::poll(Duration::ZERO)? {
                 app.on_event(event::read()?);
