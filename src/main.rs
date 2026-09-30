@@ -7,6 +7,7 @@ mod parser;
 mod storage;
 mod theme;
 mod ui;
+mod uri;
 mod xray;
 
 use clap::{Parser, Subcommand};

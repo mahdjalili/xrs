@@ -21,7 +21,6 @@ unicode-width = "0.2.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "std", "tracing-log"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls", "gzip"] }
-url = "2.5.8"
 socket2 = { version = "0.6.5", features = ["all"] }
 percent-encoding = "2.3.2"
 signal-hook = { version = "0.4.4", default-features = false, features = ["iterator"] }

@@ -1,5 +1,6 @@
 use super::app::{App, Latency, LinkKind, Overlay, SortMode, Tab, ToastLevel, detect_link};
 use crate::model::Subscription;
+use crate::uri::Uri;
 use crate::theme::Theme;
 use ratatui::{
     Frame,
@@ -936,20 +937,17 @@ pub fn relative_time(unix: u64) -> String {
 /// Subscription URLs usually carry an access token in the query string, so
 /// only the host and path are shown on screen.
 pub fn redact_url(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(u) => {
-            let base = format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or_default(), u.path());
-            if u.query().is_some() { format!("{base}?…") } else { base }
+    match Uri::parse(url) {
+        Some(u) => {
+            let base = format!("{}://{}{}", u.scheme, u.host_str(), u.http_path());
+            if u.query.is_some() { format!("{base}?…") } else { base }
         }
-        Err(_) => "(invalid URL)".to_string(),
+        None => "(invalid URL)".to_string(),
     }
 }
 
 fn host_of(url: &str) -> String {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .unwrap_or_else(|| url.to_string())
+    Uri::parse(url).map(|u| u.host_str()).unwrap_or_else(|| url.to_string())
 }
 
 #[cfg(test)]
