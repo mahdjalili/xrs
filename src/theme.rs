@@ -131,7 +131,7 @@ pub struct Theme {
 #[allow(dead_code)]
 impl Theme {
     pub fn load() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let state_theme_file = home.join(".local/state/omarchy/current/theme/colors.toml");
 
         if state_theme_file.exists() {
