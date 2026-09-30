@@ -1,15 +1,13 @@
+use crate::latency::ProbeRoute;
 use crate::model::AppConfig;
 use crate::storage::{add_subscription, update_all_subscriptions};
 use crate::xray::XrayRunner;
 use std::collections::VecDeque;
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 const PING_WORKERS: usize = 16;
-const PING_TIMEOUT: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnOp {
@@ -55,11 +53,13 @@ pub fn spawn_connection(tx: Sender<TaskEvent>, op: ConnOp, cfg: AppConfig) {
 
 /// Probes every target concurrently with a small worker pool, streaming one
 /// event per node so the table fills in live instead of after the slowest host.
-pub fn spawn_ping(tx: Sender<TaskEvent>, targets: Vec<PingTarget>) {
+pub fn spawn_ping(tx: Sender<TaskEvent>, targets: Vec<PingTarget>, route: ProbeRoute) {
     let workers = PING_WORKERS.min(targets.len());
     let queue = Arc::new(Mutex::new(targets.into_iter().collect::<VecDeque<_>>()));
+    let route = Arc::new(route);
     for _ in 0..workers {
         let queue = Arc::clone(&queue);
+        let route = Arc::clone(&route);
         let tx = tx.clone();
         thread::spawn(move || {
             loop {
@@ -68,7 +68,7 @@ pub fn spawn_ping(tx: Sender<TaskEvent>, targets: Vec<PingTarget>) {
                     Err(_) => None,
                 };
                 let Some(target) = job else { break };
-                let ms = tcp_latency(&target.host, target.port);
+                let ms = route.tcp_latency(&target.host, target.port);
                 if tx.send(TaskEvent::Ping { id: target.id, ms }).is_err() {
                     break;
                 }
@@ -89,13 +89,4 @@ pub fn spawn_add_subscription(tx: Sender<TaskEvent>, mut cfg: AppConfig, url: St
         let result = add_subscription(&mut cfg, &url, Some(&name)).map(|s| (s.name, s.node_count));
         let _ = tx.send(TaskEvent::SubscriptionAdded(result));
     });
-}
-
-/// TCP handshake time only; DNS resolution is excluded so the number reflects
-/// the network path to the server rather than resolver speed.
-fn tcp_latency(host: &str, port: u16) -> Option<u64> {
-    let addr = (host, port).to_socket_addrs().ok()?.next()?;
-    let start = Instant::now();
-    TcpStream::connect_timeout(&addr, PING_TIMEOUT).ok()?;
-    Some(start.elapsed().as_millis() as u64)
 }
