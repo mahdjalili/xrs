@@ -1,57 +1,37 @@
-use std::fs;
-use std::path::PathBuf;
 use ratatui::style::Color;
-use serde::Deserialize;
+use std::collections::HashMap;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ThemeColors {
-    #[serde(default = "default_mode")]
     pub mode: String,
 
-    #[serde(default = "default_accent")]
     pub accent: String,
-    #[serde(default = "default_selection")]
     pub selection: String,
-    #[serde(default = "default_muted")]
     pub muted: String,
 
-    #[serde(default = "default_bg")]
     pub background: String,
-    #[serde(default = "default_dark_bg")]
     pub dark_background: String,
-    #[serde(default = "default_darker_bg")]
     pub darker_background: String,
-    #[serde(default = "default_lighter_bg")]
     pub lighter_background: String,
 
-    #[serde(default = "default_fg")]
     pub foreground: String,
-    #[serde(default = "default_dark_fg")]
     pub dark_foreground: String,
-    #[serde(default = "default_light_fg")]
     pub light_foreground: String,
-    #[serde(default = "default_bright_fg")]
     pub bright_foreground: String,
 
-    #[serde(default = "default_red")]
     pub red: String,
-    #[serde(default = "default_green")]
     pub green: String,
-    #[serde(default = "default_yellow")]
     pub yellow: String,
-    #[serde(default = "default_blue")]
     pub blue: String,
-    #[serde(default = "default_cyan")]
     pub cyan: String,
-    #[serde(default = "default_magenta")]
     pub magenta: String,
 
-    #[serde(default = "default_bright_red")]
     pub bright_red: String,
-    #[serde(default = "default_bright_green")]
     pub bright_green: String,
-    #[serde(default = "default_bright_yellow")]
     pub bright_yellow: String,
 }
 
@@ -105,6 +85,91 @@ impl Default for ThemeColors {
     }
 }
 
+impl ThemeColors {
+    /// Reads a flat `key = "value"` TOML file such as Omarchy's `colors.toml`.
+    /// As with a strict TOML deserializer, a known key holding something other
+    /// than a string makes the whole file fall back to the defaults.
+    fn from_toml(content: &str) -> Option<Self> {
+        let mut values: HashMap<&str, String> = HashMap::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                break;
+            }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = line.split_once('=')?;
+            let key = key.trim().trim_matches('"');
+            if !KNOWN_KEYS.contains(&key) {
+                continue;
+            }
+            if values.insert(key, toml_string(value.trim())?).is_some() {
+                return None;
+            }
+        }
+        let mut get = |key: &str, default: fn() -> String| values.remove(key).unwrap_or_else(default);
+        Some(Self {
+            mode: get("mode", default_mode),
+            accent: get("accent", default_accent),
+            selection: get("selection", default_selection),
+            muted: get("muted", default_muted),
+            background: get("background", default_bg),
+            dark_background: get("dark_background", default_dark_bg),
+            darker_background: get("darker_background", default_darker_bg),
+            lighter_background: get("lighter_background", default_lighter_bg),
+            foreground: get("foreground", default_fg),
+            dark_foreground: get("dark_foreground", default_dark_fg),
+            light_foreground: get("light_foreground", default_light_fg),
+            bright_foreground: get("bright_foreground", default_bright_fg),
+            red: get("red", default_red),
+            green: get("green", default_green),
+            yellow: get("yellow", default_yellow),
+            blue: get("blue", default_blue),
+            cyan: get("cyan", default_cyan),
+            magenta: get("magenta", default_magenta),
+            bright_red: get("bright_red", default_bright_red),
+            bright_green: get("bright_green", default_bright_green),
+            bright_yellow: get("bright_yellow", default_bright_yellow),
+        })
+    }
+}
+
+const KNOWN_KEYS: [&str; 21] = [
+    "mode", "accent", "selection", "muted", "background", "dark_background", "darker_background",
+    "lighter_background", "foreground", "dark_foreground", "light_foreground", "bright_foreground",
+    "red", "green", "yellow", "blue", "cyan", "magenta", "bright_red", "bright_green", "bright_yellow",
+];
+
+/// A single-line TOML basic (`"..."`) or literal (`'...'`) string, optionally
+/// followed by a comment.
+fn toml_string(value: &str) -> Option<String> {
+    let mut chars = value.chars();
+    let quote = chars.next().filter(|q| *q == '"' || *q == '\'')?;
+    let mut out = String::new();
+    loop {
+        match chars.next()? {
+            c if c == quote => break,
+            '\\' if quote == '"' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                'e' => out.push('\u{1b}'),
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                'u' => out.push(char::from_u32(u32::from_str_radix(&chars.by_ref().take(4).collect::<String>(), 16).ok()?)?),
+                'U' => out.push(char::from_u32(u32::from_str_radix(&chars.by_ref().take(8).collect::<String>(), 16).ok()?)?),
+                _ => return None,
+            },
+            c => out.push(c),
+        }
+    }
+    let rest = chars.as_str().trim_start();
+    (rest.is_empty() || rest.starts_with('#')).then_some(out)
+}
+
 pub fn parse_hex_color(hex: &str) -> (u8, u8, u8) {
     let clean = hex.trim().trim_start_matches('#');
     if clean.len() >= 6 {
@@ -126,30 +191,44 @@ pub fn hex_to_ratatui(hex: &str) -> Color {
 pub struct Theme {
     pub has_desktop_theme: bool,
     pub colors: ThemeColors,
+    stamp: Option<FileStamp>,
+}
+
+/// Identifies one version of a file; Omarchy switches themes by repointing a
+/// symlink, which changes the inode even if mtimes happen to match.
+type FileStamp = (u64, u64, i64, i64, u64);
+
+fn file_stamp(path: &std::path::Path) -> Option<FileStamp> {
+    let m = fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino(), m.mtime(), m.mtime_nsec(), m.size()))
 }
 
 #[allow(dead_code)]
 impl Theme {
     pub fn load() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let state_theme_file = home.join(".local/state/omarchy/current/theme/colors.toml");
-
-        if state_theme_file.exists() {
-            let colors = fs::read_to_string(&state_theme_file)
+        let file = Self::file();
+        let stamp = file_stamp(&file);
+        if file.exists() {
+            let colors = fs::read_to_string(&file)
                 .ok()
-                .and_then(|content| toml::from_str::<ThemeColors>(&content).ok())
+                .and_then(|content| ThemeColors::from_toml(&content))
                 .unwrap_or_default();
-
-            Self {
-                has_desktop_theme: true,
-                colors,
-            }
+            Self { has_desktop_theme: true, colors, stamp }
         } else {
-            Self {
-                has_desktop_theme: false,
-                colors: ThemeColors::default(),
-            }
+            Self { has_desktop_theme: false, colors: ThemeColors::default(), stamp }
         }
+    }
+
+    /// Reloads only if the theme file was switched or edited since last read.
+    pub fn refresh(&mut self) {
+        if file_stamp(&Self::file()) != self.stamp {
+            *self = Self::load();
+        }
+    }
+
+    fn file() -> PathBuf {
+        let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".local/state/omarchy/current/theme/colors.toml")
     }
 
     pub fn accent(&self) -> Color {
@@ -219,5 +298,35 @@ impl Theme {
     /// Text color for labels drawn on top of accent or status fills.
     pub fn on_accent(&self) -> Color {
         hex_to_ratatui(&self.colors.darker_background)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_omarchy_style_colors() {
+        let c = ThemeColors::from_toml(
+            "# Tokyo Night\naccent = \"#7aa2f7\"\nforeground = '#a9b1d6' # fg\n\"background\" = \"#1a1b26\"\ncolor0 = \"#32344a\"\nopacity = 0.9\n\n[extra]\nred = \"#000000\"\n",
+        )
+        .expect("valid");
+        assert_eq!(c.accent, "#7aa2f7");
+        assert_eq!(c.foreground, "#a9b1d6");
+        assert_eq!(c.background, "#1a1b26");
+        assert_eq!(c.red, default_red());
+    }
+
+    #[test]
+    fn non_string_known_key_falls_back_to_defaults() {
+        assert!(ThemeColors::from_toml("accent = 5\n").is_none());
+        assert!(ThemeColors::from_toml("accent = \"#123456\" trailing\n").is_none());
+    }
+
+    #[test]
+    fn basic_string_escapes() {
+        assert_eq!(toml_string(r#""a\"b\u0041""#).as_deref(), Some("a\"bA"));
+        assert_eq!(toml_string(r"'C:\path'").as_deref(), Some(r"C:\path"));
+        assert_eq!(toml_string("\"open"), None);
     }
 }

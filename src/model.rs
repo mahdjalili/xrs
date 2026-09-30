@@ -10,16 +10,22 @@ pub enum Protocol {
     Http,
 }
 
+impl Protocol {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Protocol::Vless => "VLESS",
+            Protocol::Vmess => "VMESS",
+            Protocol::Trojan => "TROJAN",
+            Protocol::Shadowsocks => "SS",
+            Protocol::Socks5 => "SOCKS5",
+            Protocol::Http => "HTTP",
+        }
+    }
+}
+
 impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Protocol::Vless => write!(f, "VLESS"),
-            Protocol::Vmess => write!(f, "VMESS"),
-            Protocol::Trojan => write!(f, "TROJAN"),
-            Protocol::Shadowsocks => write!(f, "SS"),
-            Protocol::Socks5 => write!(f, "SOCKS5"),
-            Protocol::Http => write!(f, "HTTP"),
-        }
+        f.write_str(self.label())
     }
 }
 
