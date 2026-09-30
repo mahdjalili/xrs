@@ -1,5 +1,6 @@
 use crate::model::{AppConfig, ProxyNode, RouteRule, Subscription};
 use crate::parser::{parse_link, parse_subscription_text};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,26 +64,54 @@ pub fn ensure_directories() -> std::io::Result<()> {
 
 pub fn load_config() -> AppConfig {
     let config_file = get_config_dir().join("config.json");
-    if config_file.exists()
-        && let Ok(content) = fs::read_to_string(&config_file)
-            && let Ok(cfg) = serde_json::from_str::<AppConfig>(&content) {
-                return cfg;
-            }
-    AppConfig::default()
+    let Ok(content) = fs::read_to_string(&config_file) else {
+        return AppConfig::default();
+    };
+    match serde_json::from_str::<AppConfig>(&content) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // The next save would replace the unreadable file with defaults,
+            // wiping every server and subscription, so keep a copy first.
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            let backup = config_file.with_extension(format!("json.broken-{ts}"));
+            let _ = fs::copy(&config_file, &backup);
+            tracing::error!("Config {} is unreadable ({e}); saved a copy to {}", config_file.display(), backup.display());
+            AppConfig::default()
+        }
+    }
 }
 
+/// Writes atomically (temp file + rename) so a crash or a concurrent reader
+/// never sees a truncated file. The config holds proxy credentials, so it is
+/// only readable by the owner.
 pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
     ensure_directories()?;
     let config_file = get_config_dir().join("config.json");
+    let tmp = config_file.with_extension(format!("json.tmp-{}", std::process::id()));
     let content = serde_json::to_string_pretty(cfg)?;
-    fs::write(config_file, content)
+    let write = || -> std::io::Result<()> {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+        fs::rename(&tmp, &config_file)
+    };
+    write().inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }
 
 pub fn add_single_node(cfg: &mut AppConfig, link: &str) -> Result<ProxyNode, String> {
     let node = parse_link(link, None).ok_or_else(|| "Failed to parse proxy link. Ensure it is a valid vless://, vmess://, trojan://, or ss:// URI.".to_string())?;
 
-    // Remove existing node with same ID if any
-    cfg.nodes.retain(|n| n.id != node.id);
+    cfg.nodes.retain(|n| n.id != node.id && n.raw_link != node.raw_link);
     cfg.nodes.push(node.clone());
 
     if cfg.active_node_id.is_none() {
@@ -94,6 +123,9 @@ pub fn add_single_node(cfg: &mut AppConfig, link: &str) -> Result<ProxyNode, Str
 }
 
 pub fn add_subscription(cfg: &mut AppConfig, url: &str, name_opt: Option<&str>) -> Result<Subscription, String> {
+    if cfg.subscriptions.iter().any(|s| s.url.trim() == url.trim()) {
+        return Err("This subscription URL is already added. Use update to refresh it.".to_string());
+    }
     let id = format!("{:x}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
     let name = name_opt.unwrap_or("Subscription").to_string();
 
@@ -122,11 +154,24 @@ pub fn add_subscription(cfg: &mut AppConfig, url: &str, name_opt: Option<&str>) 
 
 pub fn update_all_subscriptions(cfg: &mut AppConfig) -> Vec<(String, Result<usize, String>)> {
     let mut results = Vec::new();
+    let previous_active = cfg
+        .active_node_id
+        .as_ref()
+        .and_then(|id| cfg.nodes.iter().find(|n| &n.id == id))
+        .cloned();
+    let old_pings: HashMap<String, u64> = cfg
+        .nodes
+        .iter()
+        .filter_map(|n| n.ping_ms.map(|p| (n.raw_link.clone(), p)))
+        .collect();
 
     for sub in &mut cfg.subscriptions {
         match fetch_subscription(&sub.url) {
             Ok(body) => {
-                let parsed = parse_subscription_text(&body, &sub.id);
+                let mut parsed = parse_subscription_text(&body, &sub.id);
+                for node in &mut parsed {
+                    node.ping_ms = old_pings.get(&node.raw_link).copied();
+                }
                 let count = parsed.len();
                 sub.node_count = count;
                 sub.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -142,8 +187,22 @@ pub fn update_all_subscriptions(cfg: &mut AppConfig) -> Vec<(String, Result<usiz
         }
     }
 
+    if let Some(id) = previous_active.and_then(|prev| relocate_node(&cfg.nodes, &prev)) {
+        cfg.active_node_id = Some(id);
+    }
+
     let _ = save_config(cfg);
     results
+}
+
+/// Providers rotate link parameters (paths, SNI, keys) on refresh, which
+/// changes node ids. Find the same logical server so the user stays on it.
+fn relocate_node(nodes: &[ProxyNode], prev: &ProxyNode) -> Option<String> {
+    let by = |pred: &dyn Fn(&ProxyNode) -> bool| nodes.iter().find(|n| pred(n)).map(|n| n.id.clone());
+    by(&|n| n.id == prev.id)
+        .or_else(|| by(&|n| n.raw_link == prev.raw_link))
+        .or_else(|| by(&|n| n.name == prev.name && n.server == prev.server && n.port == prev.port))
+        .or_else(|| by(&|n| n.name == prev.name))
 }
 
 fn fetch_subscription(url: &str) -> Result<String, String> {
@@ -207,4 +266,40 @@ pub fn setup_iran_rule_preset(cfg: &mut AppConfig) -> Result<(), String> {
         proxy_ips: Vec::new(),
     };
     add_route_rule(cfg, rule)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_link;
+
+    fn node(link: &str) -> ProxyNode {
+        parse_link(link, Some("s".into())).expect("valid link")
+    }
+
+    #[test]
+    fn relocates_active_node_after_provider_rotates_params() {
+        let prev = node("vless://u@fi.example.net:443?path=%2Fold&type=ws#FI1");
+        let fresh = vec![
+            node("vless://u@de.example.net:443?type=ws#DE1"),
+            node("vless://u@fi.example.net:443?path=%2Fnew&type=ws#FI1"),
+        ];
+        assert_ne!(prev.id, fresh[1].id);
+        assert_eq!(relocate_node(&fresh, &prev), Some(fresh[1].id.clone()));
+    }
+
+    #[test]
+    fn relocation_gives_up_when_server_is_gone() {
+        let prev = node("vless://u@fi.example.net:443#FI1");
+        let fresh = vec![node("vless://u@de.example.net:443#DE1")];
+        assert_eq!(relocate_node(&fresh, &prev), None);
+    }
+
+    #[test]
+    fn partial_config_keeps_nodes_and_defaults_the_rest() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"nodes": [], "active_node_id": "x"}"#).expect("parse");
+        assert_eq!(cfg.active_node_id.as_deref(), Some("x"));
+        assert_eq!(cfg.inbounds.socks_port, 10808);
+        assert!(!cfg.routing.rules.is_empty());
+    }
 }
