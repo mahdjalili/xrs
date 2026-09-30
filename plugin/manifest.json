@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "xrs",
-  "name": "xrs",
+  "name": "Proxy",
   "version": "1.0.0",
   "author": "Mahdi",
   "license": "MIT",
-  "description": "xrs - an xray cli first ultra fast lightweight client",
+  "description": "An xray cli-first ultra fast lightweight client",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "xrs",
-    "description": "an xray cli first ultra fast lightweight client",
+    "displayName": "Proxy",
+    "description": "an xray cli-first ultra fast lightweight client",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"
