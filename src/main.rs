@@ -2,6 +2,7 @@
 #![deny(clippy::unwrap_used)]
 
 mod error;
+mod latency;
 mod model;
 mod parser;
 mod storage;
@@ -13,7 +14,6 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result};
 use colored::*;
 use model::{AppConfig, RouteRule};
-use std::net::ToSocketAddrs;
 use storage::*;
 use tracing::{debug, error, info, warn};
 use xray::{check_or_setup_tun_caps, find_xray_binary, install_tun_sudoers, XrayRunner};
@@ -742,18 +742,16 @@ async fn main() -> Result<()> {
             }
             NodeAction::Ping => {
                 println!("Testing latency to all nodes...");
+                let route = latency::ProbeRoute::detect(&cfg.tun.name);
+                if route.bypasses_tunnel() {
+                    println!("  {}", "TUN is active; probing via the physical uplink.".dimmed());
+                }
                 for node in &mut cfg.nodes {
-                    let start = std::time::Instant::now();
-                    node.ping_ms = None;
-                    if let Ok(mut addrs) = (node.server.as_str(), node.port).to_socket_addrs()
-                        && let Some(addr) = addrs.next()
-                            && std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(1500)).is_ok() {
-                                let ms = start.elapsed().as_millis() as u64;
-                                node.ping_ms = Some(ms);
-                                println!("  ✔ {:<30} -> {}ms", node.name.cyan(), ms);
-                                continue;
-                            }
-                    println!("  ✖ {:<30} -> unreachable", node.name.dimmed());
+                    node.ping_ms = route.tcp_latency(&node.server, node.port);
+                    match node.ping_ms {
+                        Some(ms) => println!("  ✔ {:<30} -> {}ms", node.name.cyan(), ms),
+                        None => println!("  ✖ {:<30} -> unreachable", node.name.dimmed()),
+                    }
                 }
                 let _ = save_config(&cfg);
             }
