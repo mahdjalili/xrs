@@ -1,0 +1,77 @@
+name: build-linux
+
+# Build all Linux packages on version tags (v0.1.0, ...).
+# Manual runs are also possible from the Actions tab (workflow_dispatch).
+# This workflow ONLY builds and uploads artifacts - it publishes nothing.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install aarch64 cross toolchain
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package tarball + checksums
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            pkgver="${GITHUB_REF_NAME#v}"
+          else
+            pkgver="0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          pkgname="xrs-${pkgver}-${{ matrix.target }}"
+          mkdir -p "dist/${pkgname}"
+          cp "target/${{ matrix.target }}/release/xrs" "dist/${pkgname}/"
+          cp README.md LICENSE "dist/${pkgname}/"
+          tar -czf "dist/${pkgname}.tar.gz" -C dist "${pkgname}"
+          ( cd dist && sha256sum "${pkgname}.tar.gz" > "${pkgname}.tar.gz.sha256" )
+          ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrs-${{ matrix.target }}
+          path: dist/*.tar.gz*
+          retention-days: 14
