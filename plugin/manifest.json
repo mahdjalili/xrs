@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "xrs",
+  "name": "xrs",
+  "version": "1.0.0",
+  "author": "Mahdi",
+  "license": "MIT",
+  "description": "xrs - an xray cli first ultra fast lightweight client",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "xrs",
+    "description": "an xray cli first ultra fast lightweight client",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
