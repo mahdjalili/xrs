@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn get_config_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let new_dir = home.join(".config/xrs");
     let old_dir = home.join(".config/omaxray");
     if !new_dir.exists() && old_dir.exists() {
@@ -16,7 +16,7 @@ pub fn get_config_dir() -> PathBuf {
 }
 
 pub fn get_data_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let new_dir = home.join(".local/share/xrs");
     let old_dir = home.join(".local/share/omaxray");
     if !new_dir.exists() && old_dir.exists() {

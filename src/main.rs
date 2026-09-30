@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used)]
 
-mod error;
 mod latency;
 mod model;
 mod parser;
@@ -11,7 +10,7 @@ mod ui;
 mod xray;
 
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::{eyre, Result};
+use eyre::{eyre, Result};
 use colored::*;
 use model::{AppConfig, RouteRule};
 use storage::*;
@@ -181,17 +180,8 @@ enum NodeAction {
     Ping,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    color_eyre::install()?;
-
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .without_time()
-        .init();
+fn main() -> Result<()> {
+    init_logging();
 
     let _ = ensure_directories();
     let cli = Cli::parse();
@@ -235,7 +225,7 @@ async fn main() -> Result<()> {
                 Ok(pid) => {
                     info!("xrs daemon running (PID: {pid})");
                     println!("✔ xrs running in foreground (PID: {pid}). Press Ctrl+C to stop.");
-                    let xray_died = supervise().await;
+                    let xray_died = supervise();
                     println!("\nShutting down xrs...");
                     let _ = XrayRunner::stop();
                     if xray_died {
@@ -254,7 +244,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Service { action }) => match action {
             ServiceAction::Install => {
-                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let home = std::env::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
                 let service_dir = home.join(".config/systemd/user");
                 std::fs::create_dir_all(&service_dir)?;
                 let service_file = service_dir.join("xrs.service");
@@ -275,7 +265,7 @@ async fn main() -> Result<()> {
             }
             ServiceAction::Uninstall => {
                 let _ = std::process::Command::new("systemctl").args(["--user", "disable", "--now", "xrs.service"]).status();
-                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let home = std::env::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
                 let service_file = home.join(".config/systemd/user/xrs.service");
                 let _ = std::fs::remove_file(service_file);
                 let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
@@ -791,26 +781,52 @@ async fn main() -> Result<()> {
 /// SIGTERM must be handled as well as Ctrl-C: it is what `systemctl stop`
 /// sends, and dying without cleanup leaves TUN policy routing pointing at a
 /// vanished interface, which black-holes all traffic.
-async fn supervise() -> bool {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut term = signal(SignalKind::terminate()).ok();
-    let mut health = tokio::time::interval(std::time::Duration::from_secs(2));
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => return false,
-            _ = async {
-                match term.as_mut() {
-                    Some(t) => { t.recv().await; }
-                    None => std::future::pending::<()>().await,
+fn supervise() -> bool {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
+    const HEALTH_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+    let (tx, rx) = mpsc::channel::<()>();
+    // Held so the channel stays open (and recv_timeout keeps blocking) even
+    // if signal registration fails.
+    let _keepalive = tx.clone();
+    match signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) {
+        Ok(mut signals) => {
+            std::thread::spawn(move || {
+                if signals.forever().next().is_some() {
+                    let _ = tx.send(());
                 }
-            } => return false,
-            _ = health.tick() => {
+            });
+        }
+        Err(e) => warn!("Could not install signal handlers: {e}"),
+    }
+    loop {
+        match rx.recv_timeout(HEALTH_CHECK) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return false,
+            Err(RecvTimeoutError::Timeout) => {
                 if !XrayRunner::is_running() {
                     return true;
                 }
             }
         }
     }
+}
+
+/// Same `RUST_LOG` syntax as before (`warn`, `xrs=debug,rustls=info`), minus
+/// span/field filters, without pulling a regex engine into the binary.
+fn init_logging() {
+    use tracing_subscriber::filter::{LevelFilter, Targets};
+    use tracing_subscriber::prelude::*;
+
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.parse::<Targets>().ok())
+        .unwrap_or_else(|| Targets::new().with_default(LevelFilter::WARN));
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().without_time())
+        .with(filter)
+        .init();
 }
 
 fn prompt_confirm(prompt: &str) -> bool {
