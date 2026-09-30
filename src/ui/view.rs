@@ -44,7 +44,7 @@ impl Palette {
             fg: theme.fg(),
             bright: theme.bright_fg(),
             muted: theme.muted(),
-            faint: theme.lighter_bg(),
+            faint: mix(theme.lighter_bg(), theme.muted(), 0.35),
             bg: theme.bg(),
             surface: theme.dark_bg(),
             selection: theme.lighter_bg(),
@@ -72,6 +72,17 @@ impl Palette {
             .title(Line::from(format!(" {title} ")).fg(self.fg).bold())
             .padding(Padding::right(1))
             .style(Style::new().bg(self.bg))
+    }
+}
+
+/// Linear blend of two RGB colors; non-RGB colors fall back to `a`.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    match (a, b) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+            Color::Rgb(lerp(r1, r2), lerp(g1, g2), lerp(b1, b2))
+        }
+        _ => a,
     }
 }
 
@@ -305,7 +316,7 @@ fn render_table(
         .header(frame.header.style(Style::new().fg(p.muted).add_modifier(Modifier::BOLD)))
         .block(frame.block)
         .column_spacing(2)
-        .row_highlight_style(Style::new().bg(p.selection).fg(p.bright).bold())
+        .row_highlight_style(Style::new().bg(p.selection).add_modifier(Modifier::BOLD))
         .highlight_symbol(Span::styled("▌", Style::new().fg(p.accent)))
         .highlight_spacing(HighlightSpacing::Always);
 

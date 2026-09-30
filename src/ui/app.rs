@@ -1014,6 +1014,20 @@ mod tests {
     }
 
     #[test]
+    fn esc_clears_applied_filter_and_keeps_selection() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.filter_editing);
+        assert_eq!(app.visible_nodes(), vec![2]);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.filter.is_empty());
+        assert_eq!(app.selected_node().map(|n| n.id.as_str()), Some("c"));
+    }
+
+    #[test]
     fn filter_terms_are_anded() {
         let mut app = app();
         app.filter.insert_str("vless ams");
