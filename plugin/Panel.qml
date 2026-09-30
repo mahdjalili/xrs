@@ -134,21 +134,17 @@ Panel {
     bar: root.bar
     open: root.opened
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight + Style.space(24), Style.space(560))
+    contentHeight: panel.fittedContentHeight(stickyHeader.implicitHeight + scrollCol.implicitHeight + Style.space(34), Style.space(560))
 
-    Flickable {
-      id: flick
+    ColumnLayout {
+      id: rootCol
       anchors.fill: parent
-      contentWidth: width
-      contentHeight: mainColumn.implicitHeight
-      clip: true
-      boundsBehavior: Flickable.StopAtBounds
-      flickableDirection: Flickable.VerticalFlick
-      interactive: contentHeight > height
+      spacing: Style.space(10)
 
+      // STICKY header: toggle + active node data, stays visible while scrolling
       Column {
-        id: mainColumn
-        width: flick.width
+        id: stickyHeader
+        Layout.fillWidth: true
         spacing: Style.space(10)
 
         // 1. Header Row
@@ -276,8 +272,25 @@ Panel {
         }
 
         PanelSeparator { width: parent.width }
+      } // stickyHeader
 
-        // 3. Configs & Proxies Section
+      Flickable {
+        id: flick
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        contentWidth: width
+        contentHeight: scrollCol.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+
+        Column {
+          id: scrollCol
+          width: flick.width
+          spacing: Style.space(10)
+
+          // 3. Configs & Proxies Section
         PanelSectionHeader {
           text: "CONFIGS & PROXIES (" + root.nodes.length + ")"
         }
@@ -493,7 +506,8 @@ Panel {
           horizontalAlignment: Text.AlignHCenter
           width: parent.width
         }
-      }
-    }
-  }
-}
+        } // scrollCol
+      } // Flickable
+    } // rootCol
+  } // panel
+} // root
