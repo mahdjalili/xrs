@@ -34,12 +34,17 @@ pub fn ensure_directories() -> std::io::Result<()> {
 
     // Earlier releases shipped a sample that blocked ads unconditionally,
     // overriding the AdBlock toggle; replace it only if the user never edited it.
+    // Runs on every command, so the JSON comparison is skipped unless the
+    // file still carries the legacy sample's wording.
     let routes_file = get_config_dir().join("routes.json");
-    let is_legacy_sample = fs::read_to_string(&routes_file)
-        .ok()
-        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-        .is_some_and(|v| v == legacy_sample_routes());
-    if (!routes_file.exists() || is_legacy_sample)
+    let needs_sample = match fs::read_to_string(&routes_file) {
+        Ok(c) => {
+            c.contains("OmaXray")
+                && serde_json::from_str::<serde_json::Value>(&c).is_ok_and(|v| v == legacy_sample_routes())
+        }
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    if needs_sample
         && let Ok(content) = serde_json::to_string_pretty(&sample_routes())
     {
         let _ = fs::write(&routes_file, content);
