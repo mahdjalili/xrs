@@ -168,14 +168,6 @@ Panel {
             spacing: Style.space(2)
 
             Text {
-              text: "xrs"
-              font.family: Style.font.family
-              font.pixelSize: Style.font.title
-              font.bold: true
-              color: Color.popups.text
-            }
-
-            Text {
               text: root.running ? "● CONNECTED" : "○ DISCONNECTED"
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
