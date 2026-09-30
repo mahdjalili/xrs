@@ -397,17 +397,6 @@ Panel {
           }
         }
 
-        // Status message toast
-        Text {
-          visible: root.statusMsg.length > 0
-          text: root.statusMsg
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          color: Color.accent
-          horizontalAlignment: Text.AlignHCenter
-          width: parent.width
-        }
         } // scrollCol
       } // Flickable
 
@@ -513,6 +502,18 @@ Panel {
               }
             }
           }
+        }
+
+        // Status message toast (pinned in footer)
+        Text {
+          visible: root.statusMsg.length > 0
+          text: root.statusMsg
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          color: Color.accent
+          horizontalAlignment: Text.AlignHCenter
+          width: parent.width
         }
       } // footerCol
     } // rootCol
