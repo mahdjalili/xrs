@@ -14,7 +14,7 @@ pub fn find_xray_binary() -> Option<PathBuf> {
     }
 
     // 2. Check PATH
-    if let Ok(path) = which::which("xray") {
+    if let Some(path) = find_in_path("xray") {
         return Some(path);
     }
 
@@ -27,6 +27,15 @@ pub fn find_xray_binary() -> Option<PathBuf> {
     }
 
     None
+}
+
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(name))
+        .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
