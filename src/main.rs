@@ -17,7 +17,7 @@ use colored::*;
 use model::{AppConfig, RouteRule};
 use storage::*;
 use log::{debug, error, info, warn};
-use xray::{check_or_setup_tun_caps, find_xray_binary, install_tun_sudoers, XrayRunner};
+use xray::{check_or_setup_tun_caps, find_xray_binary, install_tun_sudoers, tun_interface_up, XrayRunner};
 
 #[derive(Parser)]
 #[command(
@@ -227,7 +227,7 @@ fn main() -> Result<()> {
                 Ok(pid) => {
                     info!("xrs daemon running (PID: {pid})");
                     println!("✔ xrs running in foreground (PID: {pid}). Press Ctrl+C to stop.");
-                    let xray_died = supervise();
+                    let xray_died = supervise(&cfg);
                     println!("\nShutting down xrs...");
                     let _ = XrayRunner::stop();
                     if xray_died {
@@ -789,13 +789,13 @@ fn main() -> Result<()> {
 }
 
 /// Waits until the daemon should shut down. Returns `true` if Xray died on
-/// its own, so the caller can exit non-zero and let systemd's
-/// `Restart=on-failure` bring it back.
+/// its own, or if a TUN-enabled session could not be healed, so the caller
+/// can exit non-zero and let systemd's `Restart=on-failure` bring it back.
 ///
 /// SIGTERM must be handled as well as Ctrl-C: it is what `systemctl stop`
 /// sends, and dying without cleanup leaves TUN policy routing pointing at a
 /// vanished interface, which black-holes all traffic.
-fn supervise() -> bool {
+fn supervise(cfg: &AppConfig) -> bool {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use std::sync::mpsc::{self, RecvTimeoutError};
 
@@ -820,6 +820,17 @@ fn supervise() -> bool {
             Err(RecvTimeoutError::Timeout) => {
                 if !XrayRunner::is_running() {
                     return true;
+                }
+                // Keep TUN up continuously: a vanished interface (network
+                // manager restart, manual deletion) is recreated by
+                // restarting the core, which also reapplies policy routing.
+                if cfg.tun.enabled
+                    && !tun_interface_up(&cfg.tun.name)
+                {
+                    warn!("TUN interface '{}' disappeared; restarting Xray to recreate it", cfg.tun.name);
+                    if XrayRunner::restart(cfg).is_err() {
+                        return true;
+                    }
                 }
             }
         }
