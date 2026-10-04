@@ -1,5 +1,5 @@
-use crate::latency::ProbeRoute;
-use crate::model::AppConfig;
+use crate::latency;
+use crate::model::{AppConfig, ProxyNode};
 use crate::storage::{add_subscription, update_all_subscriptions};
 use crate::xray::XrayRunner;
 use std::collections::VecDeque;
@@ -7,7 +7,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-const PING_WORKERS: usize = 16;
+/// Real latency spawns a short-lived Xray per probe, so keep concurrency low.
+const PING_WORKERS: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnOp {
@@ -36,8 +37,7 @@ pub enum TaskEvent {
 
 pub struct PingTarget {
     pub id: String,
-    pub host: String,
-    pub port: u16,
+    pub node: ProxyNode,
 }
 
 pub fn spawn_connection(tx: Sender<TaskEvent>, op: ConnOp, cfg: AppConfig) {
@@ -53,13 +53,14 @@ pub fn spawn_connection(tx: Sender<TaskEvent>, op: ConnOp, cfg: AppConfig) {
 
 /// Probes every target concurrently with a small worker pool, streaming one
 /// event per node so the table fills in live instead of after the slowest host.
-pub fn spawn_ping(tx: Sender<TaskEvent>, targets: Vec<PingTarget>, route: ProbeRoute) {
+/// Each probe measures real through-proxy latency (HTTP via a throwaway Xray).
+pub fn spawn_ping(tx: Sender<TaskEvent>, targets: Vec<PingTarget>, tun_name: String) {
     let workers = PING_WORKERS.min(targets.len());
     let queue = Arc::new(Mutex::new(targets.into_iter().collect::<VecDeque<_>>()));
-    let route = Arc::new(route);
+    let tun_name = Arc::new(tun_name);
     for _ in 0..workers {
         let queue = Arc::clone(&queue);
-        let route = Arc::clone(&route);
+        let tun_name = Arc::clone(&tun_name);
         let tx = tx.clone();
         thread::spawn(move || {
             loop {
@@ -68,7 +69,7 @@ pub fn spawn_ping(tx: Sender<TaskEvent>, targets: Vec<PingTarget>, route: ProbeR
                     Err(_) => None,
                 };
                 let Some(target) = job else { break };
-                let ms = route.tcp_latency(&target.host, target.port);
+                let ms = latency::measure(&target.node, &tun_name);
                 if tx.send(TaskEvent::Ping { id: target.id, ms }).is_err() {
                     break;
                 }
