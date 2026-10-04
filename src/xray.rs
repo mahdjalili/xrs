@@ -477,11 +477,20 @@ impl XrayRunner {
             "Xray binary not found. Run 'xrs install-xray' or place binary in ~/.local/share/xrs/xray".to_string()
         })?;
 
-        // If TUN mode is enabled, verify capabilities
-        if cfg.tun.enabled
-            && let Err(e) = check_or_setup_tun_caps(&xray_bin) {
+        // TUN mode setup is performed automatically here (and on every start,
+        // idempotently) so the manual `xrs setup-tun` step is optional: file
+        // capabilities are mandatory, the sudoers rule is best effort since
+        // apply_tun_routing falls back to a single pkexec shell without it.
+        if cfg.tun.enabled {
+            if let Err(e) = check_or_setup_tun_caps(&xray_bin) {
                 return Err(format!("TUN mode requires network capability: {e}. Run 'xrs setup-tun'"));
             }
+            if !tun_sudoers_installed()
+                && let Err(e) = install_tun_sudoers()
+            {
+                log::warn!("Automatic TUN setup could not install the sudoers rule: {e}");
+            }
+        }
 
         // Write config
         let xray_json = generate_xray_config(cfg, node);
@@ -852,6 +861,13 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
     }
 }
 
+/// Whether the passwordless sudoers rule installed by `xrs setup-tun` is
+/// already in place. The file is root-owned (0440), so for a user process
+/// existence is all that can be verified.
+fn tun_sudoers_installed() -> bool {
+    fs::metadata("/etc/sudoers.d/xrs").is_ok()
+}
+
 pub fn install_tun_sudoers() -> Result<(), String> {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
@@ -878,6 +894,13 @@ pub fn install_tun_sudoers() -> Result<(), String> {
         Ok(_) => Err("Elevated permissions rejected while installing sudoers rule".to_string()),
         Err(e) => Err(format!("Failed to execute pkexec for sudoers install: {e}")),
     }
+}
+
+/// Whether the kernel TUN interface currently exists. Reads /sys, so it needs
+/// no elevation and no PATH lookup; used by the daemon to notice a vanished
+/// interface and bring the tunnel back up.
+pub fn tun_interface_up(name: &str) -> bool {
+    is_valid_ifname(name) && Path::new("/sys/class/net").join(name).exists()
 }
 
 pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
@@ -993,5 +1016,12 @@ mod tests {
         let cmds = tun_up_commands("xrs-tun", 1400);
         assert!(cmds[0].args.iter().any(|a| a == "1400"));
         assert!(tun_batch_shell("xrs-tun", 1400, true).contains("mtu 1400"));
+    }
+
+    #[test]
+    fn tun_interface_check_never_panics_and_rejects_bad_names() {
+        assert!(!tun_interface_up(""));
+        assert!(!tun_interface_up("bad name!"));
+        assert!(!tun_interface_up("xrs-no-such-interface"));
     }
 }
