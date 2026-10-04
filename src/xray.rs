@@ -621,7 +621,11 @@ fn is_our_xray(pid: u32, config: &Path) -> bool {
     let Ok(state) = Command::new("ps").args(["-p", &pid, "-o", "state="]).output() else {
         return false;
     };
-    if !state.status.success() || state.stdout.trim().starts_with(b"Z") {
+    if !state.status.success() {
+        return false;
+    }
+    let state_char = String::from_utf8_lossy(&state.stdout);
+    if state_char.trim().starts_with('Z') {
         return false;
     }
     let Ok(args) = Command::new("ps").args(["-p", &pid, "-o", "args="]).output() else {
