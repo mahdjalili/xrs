@@ -1,7 +1,7 @@
 use super::input::TextInput;
 use super::tasks::{self, ConnOp, PingTarget, TaskEvent};
 use crate::model::{AppConfig, ProxyNode};
-use crate::storage::{add_single_node, load_config, save_config, setup_iran_rule_preset};
+use crate::storage::{add_single_node, load_config, save_config};
 use crate::theme::Theme;
 use crate::uri::Uri;
 use crate::xray::XrayRunner;
@@ -479,6 +479,17 @@ impl App {
                     Err(e) => self.notify(ToastLevel::Error, e),
                 }
             }
+            TaskEvent::IranPreset(result) => {
+                self.reload_config();
+                match result {
+                    Ok(()) => {
+                        self.clamp_selection(Tab::Routing);
+                        self.notify(ToastLevel::Success, "Iran bypass preset installed");
+                        self.request_reconnect();
+                    }
+                    Err(e) => self.notify(ToastLevel::Error, e),
+                }
+            }
         }
     }
 
@@ -744,14 +755,10 @@ impl App {
         if self.config_locked() {
             return;
         }
-        match setup_iran_rule_preset(&mut self.cfg) {
-            Ok(()) => {
-                self.clamp_selection(Tab::Routing);
-                self.notify(ToastLevel::Success, "Iran bypass preset installed");
-                self.request_reconnect();
-            }
-            Err(e) => self.notify(ToastLevel::Error, e),
-        }
+        // Downloads the preset's chocolate4u routing data in the background;
+        // the routing tab updates when the IranPreset task completes.
+        self.notify(ToastLevel::Info, "Installing Iran bypass preset (downloads routing data)...");
+        tasks::spawn_install_iran_preset(self.tx.clone(), self.cfg.clone());
     }
 
     // ----- input -----------------------------------------------------------
