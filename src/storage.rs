@@ -16,6 +16,22 @@ pub fn get_data_dir() -> PathBuf {
     DIR.get_or_init(|| migrated_dir(".local/share/xrs", ".local/share/omaxray")).clone()
 }
 
+/// User-writable state (XDG_STATE_HOME or ~/.local/state). Holds fingerprints
+/// of root-installed state — e.g. the TUN sudoers rule — so checks that
+/// cannot read /etc as an unprivileged process still converge.
+pub fn get_state_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        match std::env::var_os("XDG_STATE_HOME").filter(|s| !s.is_empty()) {
+            Some(state_home) => PathBuf::from(state_home).join("xrs"),
+            None => std::env::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local/state/xrs"),
+        }
+    })
+    .clone()
+}
+
 /// Resolved once per process: the TUI asks for these paths several times a
 /// second, and the legacy-name migration only matters on first use.
 fn migrated_dir(new: &str, old: &str) -> PathBuf {
