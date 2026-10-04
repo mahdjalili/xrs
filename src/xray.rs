@@ -7,26 +7,32 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub fn find_xray_binary() -> Option<PathBuf> {
-    // 1. Check local data dir
+    // Fixed locations first, in a deterministic order, so the daemon (run by
+    // the systemd user service with a minimal PATH) and an interactive
+    // terminal resolve the SAME core. A context-dependent match (PATH before
+    // fixed paths) let the two disagree, which re-fired the TUN setup — and
+    // its auth prompts — separately per context.
     let local = get_data_dir().join("xray");
     if local.is_file() {
         return Some(local);
     }
 
-    // 2. Check PATH
-    if let Some(path) = find_in_path("xray") {
-        return Some(path);
+    if let Some(home) = std::env::home_dir() {
+        let user_local = home.join(".local/bin/xray");
+        if user_local.is_file() {
+            return Some(user_local);
+        }
     }
 
-    // 3. Common system paths
-    for p in ["/usr/bin/xray", "/usr/local/bin/xray"] {
+    for p in ["/usr/local/bin/xray", "/usr/bin/xray"] {
         let pb = PathBuf::from(p);
         if pb.is_file() {
             return Some(pb);
         }
     }
 
-    None
+    // Context-dependent (differs under the systemd user service).
+    find_in_path("xray")
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -487,10 +493,13 @@ impl XrayRunner {
                     "TUN mode requires network capability: {e}. Run 'xrs install-xray' to (re)install the core with capabilities"
                 ));
             }
-            if !tun_sudoers_installed()
-                && let Err(e) = install_tun_sudoers()
-            {
-                log::warn!("Automatic TUN setup could not install the sudoers rule: {e}");
+            if !tun_sudoers_current() {
+                log::warn!(
+                    "TUN sudoers rule is missing or outdated (pre-0.7 rules miss /usr/sbin and /bin paths) — installing the refreshed rule, one-time auth"
+                );
+                if let Err(e) = install_tun_sudoers() {
+                    log::warn!("Automatic TUN setup could not install the sudoers rule: {e}");
+                }
             }
         }
 
@@ -622,6 +631,13 @@ pub fn check_or_setup_tun_caps(xray_path: &Path) -> Result<(), String> {
     if text.contains("cap_net_admin") {
         return Ok(());
     }
+
+    // Diagnostic for the repeated-prompt report: names the exact core whose
+    // capabilities are missing (it may differ from the default install path).
+    log::warn!(
+        "TUN capabilities missing on {}; requesting setcap via pkexec (one-time auth)",
+        xray_path.display()
+    );
 
     // Try setcap via pkexec
     let path_str = xray_path.to_string_lossy();
@@ -868,6 +884,13 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
     let mut sudo_ok = true;
     for cmd in &commands {
         if !try_sudo(&cmd.prog, &cmd.args) && !cmd.allow_failure {
+            // Diagnostic for the repeated-prompt report: the failing command
+            // is the one the sudoers rule does not (or no longer) cover.
+            log::warn!(
+                "Passwordless sudo failed for '{} {:?}' — falling back to pkexec (auth prompt)",
+                cmd.prog,
+                cmd.args
+            );
             sudo_ok = false;
             break;
         }
@@ -885,11 +908,24 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
     }
 }
 
-/// Whether the passwordless sudoers rule for TUN routing is already in place.
-/// The file is root-owned (0440), so for a user process existence is all that
-/// can be verified.
-fn tun_sudoers_installed() -> bool {
-    fs::metadata("/etc/sudoers.d/xrs").is_ok()
+/// Pure comparison used by `tun_sudoers_current` and the staleness test.
+fn sudoers_is_current(on_disk: &str, user: &str) -> bool {
+    on_disk == sudoers_content(user)
+}
+
+/// Whether the passwordless sudoers rule on disk matches the rule this build
+/// installs. Older releases wrote a narrower rule (missing /usr/sbin and /bin
+/// paths) at mode 0440 — unreadable to us, hence treated as stale so the
+/// next TUN start refreshes it once, after which the file is mode 0444 and
+/// comparable.
+fn tun_sudoers_current() -> bool {
+    let user = match std::env::var("USER").or_else(|_| std::env::var("LOGNAME")) {
+        Ok(user) => user,
+        // No username to compare against; keep whatever exists rather than
+        // failing the rule on every start.
+        Err(_) => return fs::metadata("/etc/sudoers.d/xrs").is_ok(),
+    };
+    fs::read_to_string("/etc/sudoers.d/xrs").is_ok_and(|on_disk| sudoers_is_current(&on_disk, &user))
 }
 
 /// One rule line covering every path resolve_tool can pick for `ip` and
@@ -925,8 +961,10 @@ pub fn install_tun_sudoers() -> Result<(), String> {
     // Write via a single elevated shell so the user authenticates exactly once.
     // Use a quoted heredoc-style printf to avoid shell injection from `content`
     // (username is already validated above, content is fully constructed here).
+    // Mode 444 (world-readable, not writable) so tun_sudoers_current can
+    // detect future rule changes without elevation.
     let script = format!(
-        "cat > /etc/sudoers.d/xrs <<'XRS_EOF'\n{content}XRS_EOF\nchmod 440 /etc/sudoers.d/xrs\nvisudo -c -f /etc/sudoers.d/xrs\n"
+        "cat > /etc/sudoers.d/xrs <<'XRS_EOF'\n{content}XRS_EOF\nchmod 444 /etc/sudoers.d/xrs\nvisudo -c -f /etc/sudoers.d/xrs\n"
     );
     match Command::new("pkexec").args(["sh", "-c", &script]).status() {
         Ok(status) if status.success() => Ok(()),
@@ -1084,6 +1122,17 @@ mod tests {
         }
         // Passwordless setcap would be a full privilege-escalation hole.
         assert!(!content.contains("setcap"));
+    }
+
+    /// Pre-0.7 installs carry this narrower rule (no /usr/sbin/ip, no
+    /// /bin/sysctl) at mode 0440. The freshness check must treat it — and
+    /// anything that is not the current content — as stale so it gets
+    /// refreshed once instead of failing `sudo -n` forever.
+    #[test]
+    fn legacy_narrow_sudoers_rule_is_detected_as_stale() {
+        let legacy = "# xrs TUN routing - passwordless ip/sysctl for TUN mode (installed by `xrs setup-tun`)\nmahdi ALL=(root) NOPASSWD: /usr/bin/ip *, /sbin/ip *, /usr/bin/sysctl *, /usr/sbin/sysctl *\n";
+        assert!(!sudoers_is_current(legacy, "mahdi"));
+        assert!(sudoers_is_current(&sudoers_content("mahdi"), "mahdi"));
     }
 
     /// The prompt-free fast path only works when every command apply_tun_routing
