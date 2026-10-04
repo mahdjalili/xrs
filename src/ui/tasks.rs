@@ -1,5 +1,6 @@
 use crate::latency;
 use crate::model::{AppConfig, ProxyNode};
+use crate::service;
 use crate::storage::{add_subscription, update_all_subscriptions};
 use crate::xray::XrayRunner;
 use std::collections::VecDeque;
@@ -42,10 +43,30 @@ pub struct PingTarget {
 
 pub fn spawn_connection(tx: Sender<TaskEvent>, op: ConnOp, cfg: AppConfig) {
     thread::spawn(move || {
+        // The background service owns the daemon when systemd is available;
+        // Xray is managed directly only as a fallback.
         let result = match op {
-            ConnOp::Connect => XrayRunner::start(&cfg).map(|_| ()),
-            ConnOp::Disconnect => XrayRunner::stop(),
-            ConnOp::Reconnect => XrayRunner::restart(&cfg).map(|_| ()),
+            ConnOp::Connect => {
+                if service::ensure_started() {
+                    Ok(())
+                } else {
+                    XrayRunner::start(&cfg).map(|_| ())
+                }
+            }
+            ConnOp::Disconnect => {
+                if service::stop_unit() {
+                    Ok(())
+                } else {
+                    XrayRunner::stop()
+                }
+            }
+            ConnOp::Reconnect => {
+                if service::restart_unit() {
+                    Ok(())
+                } else {
+                    XrayRunner::restart(&cfg).map(|_| ())
+                }
+            }
         };
         let _ = tx.send(TaskEvent::Connection { op, result });
     });

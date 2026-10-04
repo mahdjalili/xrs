@@ -41,7 +41,7 @@ The ~4.4 MB figure is the xrs TUI on its own. A connected session also runs Xray
 - **🔒 Full-tunnel TUN mode:** route your entire system through the proxy at the network layer, not just apps that respect proxy settings. Setup runs automatically the first time it starts, then a single `T` keypress toggles it.
 - **🧭 Routing rules you control:** bypass lists, ad & malware blocking, and custom domain/IP rules. Ships with an Iran-routing preset (domestic traffic goes direct, zero proxy lag). Toggle any rule live, no restarts to configure.
 - **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://` or `ss://` link, or plug in a subscription URL with auto-refresh.
-- **🔄 Runs in the background:** optional systemd service keeps you connected across logins.
+- **🔄 Runs in the background by default:** the first time you open xrs it installs and starts a systemd user service, so the proxy keeps running after you close the terminal — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it.
 - **🧩 Bar widget:** an optional native top-bar dropdown with an on/off switch, one-click server switching, and quick actions.
 
 ## Install
@@ -67,6 +67,8 @@ xrs node select              # pick a server (interactive list)
 xrs toggle                   # connect / disconnect
 xrs tun on                   # full-system tunnel mode
 ```
+
+The first launch also installs and starts a background systemd user service, so opening xrs once keeps the proxy running in the background. `xrs start` does the same from scripts (or on machines without systemd it falls back to spawning Xray directly); `xrs stop` stops it.
 
 ## For developers
 

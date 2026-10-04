@@ -5,6 +5,7 @@ mod latency;
 mod logging;
 mod model;
 mod parser;
+mod service;
 mod storage;
 mod theme;
 mod ui;
@@ -35,9 +36,10 @@ struct Cli {
 enum Commands {
     /// Open the interactive terminal UI (default)
     Tui,
-    /// Start the proxy service daemon
+    /// Start the proxy daemon in the background (installs and starts the systemd user service)
     Start,
-    /// Run proxy daemon in the foreground (used by systemd service)
+    /// Run the proxy daemon in the foreground (internal: the systemd service entry point)
+    #[command(hide = true)]
     Run,
     /// Manage xrs systemd user service (install, start, stop, restart, status)
     Service {
@@ -191,19 +193,21 @@ fn main() -> Result<()> {
 
     match cli.command {
         None | Some(Commands::Tui) => {
+            // Opening xrs counts as a start: make sure the background service
+            // is up so the proxy keeps running after the terminal closes.
+            if !service::ensure_started() {
+                debug!("No usable systemd user session; Xray will be managed directly");
+            }
             ui::run_tui().map_err(|e| eyre!("{e}"))?;
         }
         Some(Commands::Start) => {
-            if XrayRunner::is_running() {
-                warn!("xrs is already running.");
-                println!("{}", "xrs is already running.".yellow());
-            } else {
-                match XrayRunner::start(&cfg) {
-                    Ok(pid) => {
-                        info!("Started xrs with PID {pid}");
+            if service::ensure_started() {
+                info!("xrs service running in the background");
+                match service::wait_running_pid() {
+                    Some(pid) => {
                         println!(
                             "{} PID: {} (SOCKS: 127.0.0.1:{}, HTTP: 127.0.0.1:{}, TUN: {})",
-                            "✔ Started xrs.".green().bold(),
+                            "✔ Started xrs in the background.".green().bold(),
                             pid,
                             cfg.inbounds.socks_port,
                             cfg.inbounds.http_port,
@@ -214,10 +218,37 @@ fn main() -> Result<()> {
                                 println!("  Active Node: {} ({}:{})", n.name.cyan(), n.server, n.port);
                             }
                     }
-                    Err(e) => {
-                        error!("Failed to start xrs: {e}");
-                        eprintln!("{} {e}", "✖ Failed to start:".red().bold());
-                        std::process::exit(1);
+                    None => println!("{}", "✔ xrs service is running in the background.".green().bold()),
+                }
+            } else {
+                // No usable systemd user session (containers, some WSL
+                // setups): keep the previous behavior of spawning directly.
+                println!("{}", "ℹ systemd user service unavailable; starting Xray directly.".dimmed());
+                if XrayRunner::is_running() {
+                    warn!("xrs is already running.");
+                    println!("{}", "xrs is already running.".yellow());
+                } else {
+                    match XrayRunner::start(&cfg) {
+                        Ok(pid) => {
+                            info!("Started xrs with PID {pid}");
+                            println!(
+                                "{} PID: {} (SOCKS: 127.0.0.1:{}, HTTP: 127.0.0.1:{}, TUN: {})",
+                                "✔ Started xrs.".green().bold(),
+                                pid,
+                                cfg.inbounds.socks_port,
+                                cfg.inbounds.http_port,
+                                if cfg.tun.enabled { "ON".green() } else { "OFF".dimmed() }
+                            );
+                            if let Some(ref id) = cfg.active_node_id
+                                && let Some(n) = cfg.nodes.iter().find(|n| &n.id == id) {
+                                    println!("  Active Node: {} ({}:{})", n.name.cyan(), n.server, n.port);
+                                }
+                        }
+                        Err(e) => {
+                            error!("Failed to start xrs: {e}");
+                            eprintln!("{} {e}", "✖ Failed to start:".red().bold());
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
@@ -246,24 +277,13 @@ fn main() -> Result<()> {
         }
         Some(Commands::Service { action }) => match action {
             ServiceAction::Install => {
-                let home = std::env::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                let service_dir = home.join(".config/systemd/user");
-                std::fs::create_dir_all(&service_dir)?;
-                let service_file = service_dir.join("xrs.service");
-                let bin_path = std::env::current_exe()
-                    .and_then(|p| p.canonicalize())
-                    .unwrap_or_else(|_| home.join(".local/bin/xrs"));
-
-                let unit_content = format!(
-                    "[Unit]\nDescription=xrs - an xray cli first ultra fast lightweight client\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=\"{}\" run\nRestart=on-failure\nRestartSec=3s\n\n[Install]\nWantedBy=default.target\n",
-                    bin_path.display()
-                );
-
-                std::fs::write(&service_file, unit_content)?;
-                let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
-                let _ = std::process::Command::new("systemctl").args(["--user", "enable", "xrs.service"]).status();
-                println!("{}", "✔ Installed and enabled xrs systemd user service!".green().bold());
-                println!("  Run 'xrs service start' to start it in the background.");
+                if service::install_unit() {
+                    let _ = std::process::Command::new("systemctl").args(["--user", "enable", "xrs.service"]).status();
+                    println!("{}", "✔ Installed and enabled xrs systemd user service!".green().bold());
+                    println!("  Run 'xrs service start' to start it in the background.");
+                } else {
+                    eprintln!("{}", "✖ Could not write the systemd user unit.".red());
+                }
             }
             ServiceAction::Uninstall => {
                 let _ = std::process::Command::new("systemctl").args(["--user", "disable", "--now", "xrs.service"]).status();
@@ -290,7 +310,12 @@ fn main() -> Result<()> {
             }
         },
         Some(Commands::Stop) => {
-            if XrayRunner::is_running() {
+            // With the service as runtime mode, stopping must take down the
+            // unit — otherwise Restart=on-failure would revive the proxy.
+            if service::stop_unit() {
+                info!("Stopped xrs service");
+                println!("{}", "✔ Stopped xrs.".green());
+            } else if XrayRunner::is_running() {
                 let _ = XrayRunner::stop();
                 info!("Stopped xrs");
                 println!("{}", "✔ Stopped xrs.".green());
@@ -299,14 +324,22 @@ fn main() -> Result<()> {
             }
         }
         Some(Commands::Restart) => {
-            match XrayRunner::restart(&cfg) {
-                Ok(pid) => {
-                    info!("Restarted xrs with PID {pid}");
-                    println!("{} New PID: {}", "✔ Restarted xrs.".green(), pid);
+            if service::restart_unit() {
+                info!("Restarted xrs service");
+                match service::wait_running_pid() {
+                    Some(pid) => println!("{} New PID: {}", "✔ Restarted xrs.".green(), pid),
+                    None => println!("{}", "✔ Restarted xrs service.".green()),
                 }
-                Err(e) => {
-                    error!("Restart failed: {e}");
-                    eprintln!("{} {e}", "✖ Restart failed:".red());
+            } else {
+                match XrayRunner::restart(&cfg) {
+                    Ok(pid) => {
+                        info!("Restarted xrs with PID {pid}");
+                        println!("{} New PID: {}", "✔ Restarted xrs.".green(), pid);
+                    }
+                    Err(e) => {
+                        error!("Restart failed: {e}");
+                        eprintln!("{} {e}", "✖ Restart failed:".red());
+                    }
                 }
             }
         }
@@ -314,9 +347,19 @@ fn main() -> Result<()> {
             show_status(&cfg, json);
         }
         Some(Commands::Toggle) => {
-            if XrayRunner::is_running() {
+            // The unit owns the daemon when present (same rationale as stop):
+            // disconnecting must stop the unit or it would revive the proxy.
+            if service::is_active() {
+                let _ = service::stop_unit();
+                println!("{}", "○ Disconnected xrs.".yellow());
+            } else if XrayRunner::is_running() {
                 let _ = XrayRunner::stop();
                 println!("{}", "○ Disconnected xrs.".yellow());
+            } else if service::ensure_started() {
+                match service::wait_running_pid() {
+                    Some(pid) => println!("{} PID: {pid}", "● Connected xrs.".green().bold()),
+                    None => println!("{}", "● Connected xrs.".green().bold()),
+                }
             } else {
                 match XrayRunner::start(&cfg) {
                     Ok(pid) => println!("{} PID: {pid}", "● Connected xrs.".green().bold()),
