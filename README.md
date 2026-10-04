@@ -38,7 +38,7 @@ The ~4.4 MB figure is the xrs TUI on its own. A connected session also runs Xray
 
 - **⚡ Instant everything:** connect, switch nodes, and toggle the proxy in milliseconds, from the terminal or a single keypress.
 - **🖥️ Beautiful terminal UI:** just run `xrs`. Tabs for servers, routing and subscriptions, a filterable and sortable server table with live real latency (through-proxy HTTP), a details pane, mouse support, and a `?` shortcut sheet. Nothing blocks: connecting, latency tests and subscription syncs run in the background. It picks up your terminal and desktop theme colors automatically.
-- **🔒 Full-tunnel TUN mode:** route your entire system through the proxy at the network layer, not just apps that respect proxy settings. Setup runs automatically the first time it starts, then a single `T` keypress toggles it.
+- **🔒 Full-tunnel TUN mode (Linux):** route your entire system through the proxy at the network layer, not just apps that respect proxy settings. Setup runs automatically the first time it starts, then a single `T` keypress toggles it.
 - **🧭 Routing rules you control:** bypass lists, ad & malware blocking, and custom domain/IP rules. Toggle any rule live, no restarts to configure. An optional Iran-routing preset (`xrs route setup-iran`) sends domestic traffic direct, zero proxy lag — installed only when you ask for it.
 - **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://` or `ss://` link, or plug in a subscription URL with auto-refresh.
 - **🔄 Runs in the background by default:** the first time you open xrs it installs and starts a systemd user service, so the proxy keeps running after you close the terminal — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it.
@@ -46,7 +46,7 @@ The ~4.4 MB figure is the xrs TUI on its own. A connected session also runs Xray
 
 ## Install
 
-Grab the tarball for your machine from the [latest release](https://github.com/mahdjalili/xrs/releases) (`linux-amd64` for most PCs, `linux-arm64` for ARM boards like Raspberry Pi):
+Grab the tarball for your machine from the [latest release](https://github.com/mahdjalili/xrs/releases) — Linux: `linux-amd64` for most PCs, `linux-arm64` for ARM boards like Raspberry Pi; macOS: `macos-arm64` for Apple Silicon, `macos-amd64` for Intel Macs:
 
 ```bash
 tar xzf xrs-*-linux-amd64.tar.gz
@@ -55,6 +55,8 @@ xrs install-xray   # fetches the latest Xray engine + official geo data (first r
 ```
 
 No root needed. Everything lives in your home directory. TUN mode's one-time setup (file capabilities + passwordless sudo for routing) runs automatically the first time it starts.
+
+On macOS the binaries are unsigned (no Apple developer certificate), so Gatekeeper may block the first launch — right-click → Open once, or clear the flag with `xattr -d com.apple.quarantine xrs`. Each release is signed with Sigstore keyless (cosign), so downloads can still be verified.
 
 ## Quick start
 

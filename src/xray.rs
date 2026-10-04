@@ -593,6 +593,7 @@ const STOP_GRACE: Duration = Duration::from_secs(2);
 /// been reused by an unrelated process or be a zombie. Only a live process
 /// running our generated config counts; otherwise `stop` could kill a
 /// stranger.
+#[cfg(target_os = "linux")]
 fn is_our_xray(pid: u32, config: &Path) -> bool {
     let proc_dir = PathBuf::from(format!("/proc/{pid}"));
     let Ok(stat) = fs::read_to_string(proc_dir.join("stat")) else {
@@ -610,6 +611,26 @@ fn is_our_xray(pid: u32, config: &Path) -> bool {
     cmdline
         .split(|b| *b == 0)
         .any(|arg| String::from_utf8_lossy(arg) == config)
+}
+
+/// macOS has no /proc; BSD `ps` answers both questions — alive (ps exits ok,
+/// state not zombie) and running our config (args column).
+#[cfg(not(target_os = "linux"))]
+fn is_our_xray(pid: u32, config: &Path) -> bool {
+    let pid = pid.to_string();
+    let Ok(state) = Command::new("ps").args(["-p", &pid, "-o", "state="]).output() else {
+        return false;
+    };
+    if !state.status.success() || state.stdout.trim().starts_with(b"Z") {
+        return false;
+    }
+    let Ok(args) = Command::new("ps").args(["-p", &pid, "-o", "args="]).output() else {
+        return false;
+    };
+    let config = config.to_string_lossy();
+    String::from_utf8_lossy(&args.stdout)
+        .split_whitespace()
+        .any(|arg| arg == config)
 }
 
 fn log_tail() -> String {
@@ -1115,6 +1136,7 @@ mod tests {
         assert_eq!(custom_route_rules(&raw), raw.as_array().cloned().unwrap_or_default());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn process_check_matches_only_live_processes_running_our_config() {
         let marker = "/tmp/xrs-test-run.json";

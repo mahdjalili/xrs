@@ -1,6 +1,6 @@
-name: build-linux
+name: build
 
-# Build all Linux packages on version tags (v0.1.0, ...).
+# Build all release packages (Linux + macOS) on version tags (v0.1.0, ...).
 # Manual runs are also possible from the Actions tab (workflow_dispatch).
 # This workflow ONLY builds and uploads artifacts - it publishes nothing.
 on:
@@ -94,9 +94,80 @@ jobs:
           path: dist/*.tar.gz*
           retention-days: 14
 
+  build-macos:
+    name: build-macos (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            pkgarch: arm64
+          - target: x86_64-apple-darwin
+            pkgarch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Native build for arm64; the Xcode SDK on the runner cross-links the
+      # x86_64 target (no extra toolchain needed).
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package tarball + checksums
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            pkgver="${GITHUB_REF_NAME#v}"
+          else
+            pkgver="0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          pkgname="xrs-${pkgver}-macos-${{ matrix.pkgarch }}"
+          mkdir -p "dist/${pkgname}"
+          cp "target/${{ matrix.target }}/release/xrs" "dist/${pkgname}/"
+          cp README.md LICENSE "dist/${pkgname}/"
+          tar -czf "dist/${pkgname}.tar.gz" -C dist "${pkgname}"
+          ( cd dist && shasum -a 256 "${pkgname}.tar.gz" > "${pkgname}.tar.gz.sha256" )
+          echo "PKGNAME=${pkgname}" >> "$GITHUB_ENV"
+          ls -lh dist/
+
+      # No Apple codesigning (no developer certificate); binaries stay
+      # unsigned — Gatekeeper note is in the release notes and README.
+      # Sigstore keyless signing works cross-platform.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+
+      - name: Sign tarball (Sigstore keyless)
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature "dist/${PKGNAME}.tar.gz.sig" \
+            --output-certificate "dist/${PKGNAME}.tar.gz.pem" \
+            "dist/${PKGNAME}.tar.gz"
+          ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrs-macos-${{ matrix.pkgarch }}
+          path: dist/*.tar.gz*
+          retention-days: 14
+
   release:
     name: release (${{ github.ref_name }})
-    needs: [build]
+    needs: [build, build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -120,7 +191,7 @@ jobs:
           set -euo pipefail
           ls -lh release-assets/
           cat > release-assets/RELEASE_NOTES.md <<'EOF'
-          ## xrs - Linux builds
+          ## xrs - Linux and macOS builds
 
           Each `.tar.gz` contains the `xrs` binary, README and LICENSE.
 
@@ -133,6 +204,16 @@ jobs:
             --cert <file>.tar.gz.pem \
             --signature <file>.tar.gz.sig \
             <file>.tar.gz
+          ```
+
+          ### macOS
+
+          The binaries are **unsigned** (no Apple developer certificate, no
+          notarization), so Gatekeeper may block the first launch. Either
+          right-click the binary → Open once, or drop the quarantine flag:
+
+          ```bash
+          xattr -d com.apple.quarantine xrs
           ```
           EOF
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
