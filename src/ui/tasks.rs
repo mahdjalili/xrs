@@ -1,7 +1,7 @@
 use crate::latency;
 use crate::model::{AppConfig, ProxyNode};
 use crate::service;
-use crate::storage::{add_subscription, update_all_subscriptions};
+use crate::storage::{add_subscription, setup_iran_rule_preset, update_all_subscriptions};
 use crate::xray::XrayRunner;
 use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
@@ -34,6 +34,7 @@ pub enum TaskEvent {
     Connection { op: ConnOp, result: Result<(), String> },
     SubscriptionsUpdated(Vec<(String, Result<usize, String>)>),
     SubscriptionAdded(Result<(String, usize), String>),
+    IranPreset(Result<(), String>),
 }
 
 pub struct PingTarget {
@@ -110,5 +111,15 @@ pub fn spawn_add_subscription(tx: Sender<TaskEvent>, mut cfg: AppConfig, url: St
     thread::spawn(move || {
         let result = add_subscription(&mut cfg, &url, Some(&name)).map(|s| (s.name, s.node_count));
         let _ = tx.send(TaskEvent::SubscriptionAdded(result));
+    });
+}
+
+/// The Iran preset downloads its chocolate4u routing data (tens of MB), so it
+/// runs off the UI thread like every other network operation. The geodata is
+/// part of the preset (opt-in), never of `xrs install-xray`.
+pub fn spawn_install_iran_preset(tx: Sender<TaskEvent>, mut cfg: AppConfig) {
+    thread::spawn(move || {
+        let result = crate::install_iran_geodata().and_then(|_| setup_iran_rule_preset(&mut cfg));
+        let _ = tx.send(TaskEvent::IranPreset(result));
     });
 }
