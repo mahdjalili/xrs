@@ -1,13 +1,14 @@
 # xrs
 
-**The featherweight Xray client. One binary, zero bloat, total control.**
+**The featherweight Xray client — one binary, your whole proxy, right in the terminal.**
 
 [![Release](https://img.shields.io/github/v/release/mahdjalili/xrs)](https://github.com/mahdjalili/xrs/releases)
+[![Build](https://github.com/mahdjalili/xrs/actions/workflows/build.yml/badge.svg?event=push)](https://github.com/mahdjalili/xrs/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/mahdjalili/xrs)](LICENSE)
 
 ![xrs terminal interface](assets/tui.png)
 
-xrs is a blazing-fast proxy client built on Xray-core. It lives in your terminal, sips memory, and gets out of your way: connect, switch servers, and manage routing without ever touching a heavy GUI app.
+xrs is a proxy client built on Xray-core that lives in your terminal and sips memory. Connect, switch servers, and manage routing in seconds — no heavyweight GUI, no runtime bloat, nothing left running but the proxy itself.
 
 ## Why xrs
 
@@ -22,7 +23,8 @@ xrs is a blazing-fast proxy client built on Xray-core. It lives in your terminal
 
 <sub>xrs figures measured for v0.4.0 on x86_64 Linux with the stripped release build: memory is resident set size, idle CPU was sampled over 30 s, and status check time is the hyperfine mean of 500 runs. The TUI runs on a single thread and peaks at ~5.1 MB while latency-testing 200 servers. The connected-memory row is the client and its proxy core together; the breakdown is below.</sub>
 
-### Connected memory, client plus core
+<details>
+<summary><strong>Connected memory, client plus core</strong></summary>
 
 The ~4.4 MB figure is the xrs TUI on its own. A connected session also runs Xray-core. The xrs column below was remeasured for v0.4.0 on Ubuntu 24.04 x86_64 against a local VLESS + WebSocket server; Throne, Hiddify, and v2rayN keep the earlier same-methodology numbers from that machine.
 
@@ -34,29 +36,17 @@ The ~4.4 MB figure is the xrs TUI on its own. A connected session also runs Xray
 
 <sub>Resident set size after proxying 60 MB (three 20 MB downloads through the client's SOCKS port). RSS is summed from `/proc/<pid>/smaps_rollup` over the client and every process it spawned. Combined is that measured total. xrs is the v0.4.0 release binary with the TUI open and the default Iran Bypass + AdBlock rules enabled, plus Xray-core 26.9.30 started by `xrs start` (37,132 KiB for the core, 4,512 KiB for the TUI, 41,644 KiB together). Idle, right after connect and before the download, the same pair sat at 40.4 MB. With the TUI closed, `xrs start` leaves only Xray-core, at 36.0 MB idle / 36.3 MB after the download. v2rayN 7.24.9 ran its bundled Xray 26.7.28 (72,248 KiB) beside the Avalonia UI (323,836 KiB). Throne 1.3.2 served the traffic with sing-box via ThroneCore (65,600 KiB) next to the Qt UI (70,840 KiB); that build also ships Xray-core 26.9.9. Hiddify 4.1.1 loads hiddify-core inside the app process (`hiddify-core.so`), so the UI and the core are a single 387,288 KiB RSS. Proportional set size for the remeasured xrs stack is 39.1 MB; the earlier comparison clients ranked 120.6 MB, 364.9 MB, and 369.2 MB.</sub>
 
+</details>
+
 ## Features
 
-- **⚡ Instant everything:** connect, switch nodes, and toggle the proxy in milliseconds, from the terminal or a single keypress.
-- **🖥️ Beautiful terminal UI:** just run `xrs`. Tabs for servers, routing and subscriptions, a filterable and sortable server table with live real latency (through-proxy HTTP), a details pane, mouse support, and a `?` shortcut sheet. Nothing blocks: connecting, latency tests and subscription syncs run in the background. It picks up your terminal and desktop theme colors automatically.
-- **🔒 Full-tunnel TUN mode (Linux):** route your entire system through the proxy at the network layer, not just apps that respect proxy settings. Setup runs automatically the first time it starts, then a single `T` keypress toggles it.
-- **🧭 Routing rules you control:** bypass lists, ad & malware blocking, and custom domain/IP rules. Toggle any rule live, no restarts to configure. An optional Iran-routing preset (`xrs route setup-iran`) sends domestic traffic direct, zero proxy lag — installed only when you ask for it.
-- **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://` or `ss://` link, or plug in a subscription URL with auto-refresh.
-- **🔄 Runs in the background by default:** the first time you open xrs it installs and starts a systemd user service, so the proxy keeps running after you close the terminal — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it.
+- **⚡ Connect in seconds:** pick a server, toggle a rule, flip full-tunnel mode — all from the terminal or a single keypress.
+- **🖥️ A terminal UI that stays out of the way:** run `xrs` for tabs of servers, routing, and subscriptions; a filterable, sortable table with real through-proxy latency; a details pane; mouse support; and a `?` shortcut sheet. Nothing blocks — connecting, latency tests, and subscription syncs run in the background, and colors follow your terminal and desktop theme.
+- **🔒 Full-tunnel TUN mode (Linux):** route the entire system through the proxy at the network layer, not just apps that respect proxy settings. The one-time setup runs itself; after that it's a single `T` keypress.
+- **🧭 Routing rules you control:** bypass lists, ad & malware blocking, and custom domain/IP rules. Toggle any rule and xrs applies it for you. The optional Iran-routing preset (`xrs route setup-iran`) sends domestic traffic direct — installed only when you ask for it.
+- **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://`, or `ss://` link, or point at a subscription URL and let it sync.
+- **🔄 Stays connected in the background:** the first launch installs and starts a systemd user service, so the proxy keeps running after the terminal closes — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it.
 - **🧩 Bar widget:** an optional native top-bar dropdown with an on/off switch, one-click server switching, and quick actions.
-
-## Install
-
-Grab the tarball for your machine from the [latest release](https://github.com/mahdjalili/xrs/releases) — Linux: `linux-amd64` for most PCs, `linux-arm64` for ARM boards like Raspberry Pi; macOS: `macos-arm64` for Apple Silicon, `macos-amd64` for Intel Macs:
-
-```bash
-tar xzf xrs-*-linux-amd64.tar.gz
-install -Dm755 xrs-*-linux-amd64/xrs ~/.local/bin/xrs
-xrs install-xray   # fetches the latest Xray engine + official geo data (first run only)
-```
-
-No root needed. Everything lives in your home directory. TUN mode's one-time setup (file capabilities + passwordless sudo for routing) runs automatically the first time it starts.
-
-On macOS the binaries are unsigned (no Apple developer certificate), so Gatekeeper may block the first launch — right-click → Open once, or clear the flag with `xattr -d com.apple.quarantine xrs`. Each release is signed with Sigstore keyless (cosign), so downloads can still be verified.
 
 ## Quick start
 
@@ -66,10 +56,34 @@ xrs node add "vless://..."   # add a server from a share link
 xrs sub add "https://..."    # ...or add a whole subscription
 xrs node select              # pick a server (interactive list)
 xrs toggle                   # connect / disconnect
-xrs tun on                   # full-system tunnel mode
+xrs tun on                   # full-system tunnel mode (Linux)
 ```
 
-The first launch also installs and starts a background systemd user service, so opening xrs once keeps the proxy running in the background. `xrs start` does the same from scripts (or on machines without systemd it falls back to spawning Xray directly); `xrs stop` stops it.
+The first launch also installs and starts a background systemd user service, so opening xrs once keeps the proxy running in the background. `xrs start` does the same from scripts (falling back to spawning Xray directly on machines without systemd); `xrs stop` stops it.
+
+## Install
+
+Grab the tarball for your machine from the [latest release](https://github.com/mahdjalili/xrs/releases) — Linux: `linux-amd64` for most PCs, `linux-arm64` for ARM boards like Raspberry Pi; macOS: `macos-arm64` for Apple Silicon, `macos-amd64` for Intel Macs.
+
+**Linux:**
+
+```bash
+tar xzf xrs-*-linux-amd64.tar.gz
+install -Dm755 xrs-*-linux-amd64/xrs ~/.local/bin/xrs
+xrs install-xray   # fetches the latest Xray engine + official geo data (first run only)
+```
+
+**macOS:**
+
+```bash
+tar xzf xrs-*-macos-arm64.tar.gz
+mkdir -p ~/.local/bin && cp xrs-*-macos-arm64/xrs ~/.local/bin/xrs
+xrs install-xray   # fetches the latest Xray engine + official geo data (first run only)
+```
+
+No root needed on Linux; everything lives in your home directory. TUN mode's one-time setup (file capabilities + passwordless sudo for routing) runs automatically the first time it starts.
+
+macOS binaries are unsigned (no Apple developer certificate), so Gatekeeper may block the first launch — right-click → Open once, or clear the flag with `xattr -d com.apple.quarantine xrs`. Every release tarball is signed with Sigstore keyless (cosign), so downloads can still be verified.
 
 ## For developers
 
@@ -78,7 +92,7 @@ cargo build --release      # optimized binary at target/release/xrs
 cargo clippy               # lint gate: no unwrap(), no unsafe code
 ```
 
-Tagged `v*` pushes build signed Linux tarballs (`amd64` + `arm64`) via GitHub Actions and publish them as releases. See [`.github/workflows/build.yml`](.github/workflows/build.yml).
+Tagged `v*` pushes build signed Linux (`amd64` + `arm64`) and macOS (`amd64` + `arm64`) tarballs via GitHub Actions and publish them as releases. See [`.github/workflows/build.yml`](.github/workflows/build.yml).
 
 ## License
 
