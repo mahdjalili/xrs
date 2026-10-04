@@ -1,5 +1,5 @@
 use crate::model::{AppConfig, Protocol, ProxyNode};
-use crate::storage::{get_config_dir, get_data_dir};
+use crate::storage::{get_config_dir, get_data_dir, get_state_dir};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -494,11 +494,9 @@ impl XrayRunner {
                 ));
             }
             if !tun_sudoers_current() {
-                log::warn!(
-                    "TUN sudoers rule is missing or outdated (pre-0.7 rules miss /usr/sbin and /bin paths) — installing the refreshed rule, one-time auth"
-                );
+                log::warn!("TUN sudoers rule not confirmed on this machine — installing it now (one-time auth; later connects stay passwordless)");
                 if let Err(e) = install_tun_sudoers() {
-                    log::warn!("Automatic TUN setup could not install the sudoers rule: {e}");
+                    log::warn!("Could not install the TUN sudoers rule: {e} — the next TUN start retries");
                 }
             }
         }
@@ -908,16 +906,61 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
     }
 }
 
-/// Pure comparison used by `tun_sudoers_current` and the staleness test.
+/// Pure comparison used by `sudoers_current_in` and the staleness test.
 fn sudoers_is_current(on_disk: &str, user: &str) -> bool {
     on_disk == sudoers_content(user)
 }
 
-/// Whether the passwordless sudoers rule on disk matches the rule this build
-/// installs. Older releases wrote a narrower rule (missing /usr/sbin and /bin
-/// paths) at mode 0440 — unreadable to us, hence treated as stale so the
-/// next TUN start refreshes it once, after which the file is mode 0444 and
-/// comparable.
+/// Fingerprint of the rule installed by the last successful refresh, kept in
+/// the user-writable state dir. Needed because /etc/sudoers.d is not readable
+/// — or even traversable — for the daemon on some distros (Arch ships it
+/// 0750 root:root): a compare that treats "cannot read" as stale re-prompts
+/// on every start no matter how often the refresh succeeds.
+fn sudoers_fingerprint_file(state_dir: &Path) -> PathBuf {
+    state_dir.join("sudoers-rule.json")
+}
+
+/// Records the exact installed content (and mode) after a successful elevated
+/// install. Only callers that know pkexec succeeded may write this.
+fn save_sudoers_fingerprint(state_dir: &Path, content: &str) -> std::io::Result<()> {
+    fs::create_dir_all(state_dir)?;
+    let fingerprint = json!({ "content": content, "mode": "444" });
+    fs::write(sudoers_fingerprint_file(state_dir), fingerprint.to_string())
+}
+
+fn fingerprint_matches(state_dir: &Path, desired: &str) -> bool {
+    fs::read_to_string(sudoers_fingerprint_file(state_dir))
+        .ok()
+        .and_then(|f| serde_json::from_str::<Value>(&f).ok())
+        .is_some_and(|f| {
+            f.get("content").and_then(Value::as_str) == Some(desired) && f.get("mode").and_then(Value::as_str) == Some("444")
+        })
+}
+
+/// Whether the passwordless rule is in place, checked against one sudoers.d
+/// dir (injectable for tests). A readable rule is authoritative; an
+/// unreadable one (permission denied through a non-traversable sudoers.d)
+/// falls back to the recorded fingerprint — unreadable must not mean stale,
+/// or the refresh can never converge and every start re-prompts. A rule that
+/// is genuinely gone (NotFound) always counts as stale.
+fn sudoers_current_in(sudoers_dir: &Path, state_dir: &Path, user: &str) -> bool {
+    let desired = sudoers_content(user);
+    match fs::read_to_string(sudoers_dir.join("xrs")) {
+        Ok(on_disk) => {
+            let current = sudoers_is_current(&on_disk, user);
+            if current {
+                // Keep the fingerprint in sync so a later unreadable phase
+                // (distro defaults, permission drift) still converges.
+                let _ = save_sudoers_fingerprint(state_dir, &desired);
+            }
+            current
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => fingerprint_matches(state_dir, &desired),
+    }
+}
+
+/// Whether the passwordless sudoers rule matches the rule this build installs.
 fn tun_sudoers_current() -> bool {
     let user = match std::env::var("USER").or_else(|_| std::env::var("LOGNAME")) {
         Ok(user) => user,
@@ -925,7 +968,7 @@ fn tun_sudoers_current() -> bool {
         // failing the rule on every start.
         Err(_) => return fs::metadata("/etc/sudoers.d/xrs").is_ok(),
     };
-    fs::read_to_string("/etc/sudoers.d/xrs").is_ok_and(|on_disk| sudoers_is_current(&on_disk, &user))
+    sudoers_current_in(Path::new("/etc/sudoers.d"), &get_state_dir(), &user)
 }
 
 /// One rule line covering every path resolve_tool can pick for `ip` and
@@ -961,13 +1004,21 @@ pub fn install_tun_sudoers() -> Result<(), String> {
     // Write via a single elevated shell so the user authenticates exactly once.
     // Use a quoted heredoc-style printf to avoid shell injection from `content`
     // (username is already validated above, content is fully constructed here).
-    // Mode 444 (world-readable, not writable) so tun_sudoers_current can
-    // detect future rule changes without elevation.
+    // Mode 444 (world-readable, not writable); the chained test verifies the
+    // mode actually stuck so a recorded fingerprint never lies about it.
     let script = format!(
-        "cat > /etc/sudoers.d/xrs <<'XRS_EOF'\n{content}XRS_EOF\nchmod 444 /etc/sudoers.d/xrs\nvisudo -c -f /etc/sudoers.d/xrs\n"
+        "cat > /etc/sudoers.d/xrs <<'XRS_EOF'\n{content}XRS_EOF\nchmod 444 /etc/sudoers.d/xrs && visudo -c -f /etc/sudoers.d/xrs && test \"$(stat -c %a /etc/sudoers.d/xrs)\" = \"444\"\n"
     );
     match Command::new("pkexec").args(["sh", "-c", &script]).status() {
-        Ok(status) if status.success() => Ok(()),
+        Ok(status) if status.success() => {
+            // Record what was installed only after the elevated write
+            // verified; this is what makes later freshness checks converge
+            // without reading /etc.
+            if let Err(e) = save_sudoers_fingerprint(&get_state_dir(), &content) {
+                return Err(format!("Rule installed, but its fingerprint could not be saved ({e}); the next TUN start will refresh again"));
+            }
+            Ok(())
+        }
         Ok(_) => Err("Elevated permissions rejected while installing sudoers rule".to_string()),
         Err(e) => Err(format!("Failed to execute pkexec for sudoers install: {e}")),
     }
@@ -1133,6 +1184,57 @@ mod tests {
         let legacy = "# xrs TUN routing - passwordless ip/sysctl for TUN mode (installed by `xrs setup-tun`)\nmahdi ALL=(root) NOPASSWD: /usr/bin/ip *, /sbin/ip *, /usr/bin/sysctl *, /usr/sbin/sysctl *\n";
         assert!(!sudoers_is_current(legacy, "mahdi"));
         assert!(sudoers_is_current(&sudoers_content("mahdi"), "mahdi"));
+    }
+
+    /// Arch ships /etc/sudoers.d as 0750 root:root — the unprivileged daemon
+    /// can neither read the rule nor even stat it. Regression guard for the
+    /// non-convergence that caused a pkexec prompt on EVERY start/switch:
+    /// after one successful refresh (fingerprint recorded), the check must
+    /// report current forever, so the auto-setup never calls pkexec again.
+    #[test]
+    fn refresh_converges_when_sudoers_d_is_not_traversable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = std::env::temp_dir().join(format!("xrs-sudoers-conv-{}", std::process::id()));
+        let sudoers_d = base.join("sudoers.d");
+        let state = base.join("state");
+        std::fs::create_dir_all(&sudoers_d).expect("mkdir sudoers.d");
+        std::fs::create_dir_all(&state).expect("mkdir state");
+
+        // "Root" installs the rule via the elevated script; the fingerprint
+        // is recorded exactly as install_tun_sudoers does on pkexec success.
+        std::fs::write(sudoers_d.join("xrs"), sudoers_content("mahdi")).expect("root write");
+        save_sudoers_fingerprint(&state, &sudoers_content("mahdi")).expect("fingerprint");
+
+        // The daemon then loses all access to sudoers.d (Arch layout).
+        std::fs::set_permissions(&sudoers_d, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+
+        // First check and every later one: current — no WARN, no pkexec.
+        assert!(sudoers_current_in(&sudoers_d, &state, "mahdi"));
+        assert!(sudoers_current_in(&sudoers_d, &state, "mahdi"));
+
+        // A fingerprint of different content (e.g. rule version bump) is stale
+        // even when the direct read is impossible.
+        save_sudoers_fingerprint(&state, "old narrow rule content").expect("fingerprint");
+        assert!(!sudoers_current_in(&sudoers_d, &state, "mahdi"));
+
+        // Cleanup needs the directory traversable again.
+        std::fs::set_permissions(&sudoers_d, fs::Permissions::from_mode(0o755)).expect("chmod back");
+        fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    /// A rule file that is genuinely gone counts as stale even when a
+    /// fingerprint from an earlier install matches — it must be reinstalled.
+    #[test]
+    fn missing_rule_file_is_stale_despite_matching_fingerprint() {
+        let base = std::env::temp_dir().join(format!("xrs-sudoers-gone-{}", std::process::id()));
+        let sudoers_d = base.join("sudoers.d");
+        let state = base.join("state");
+        std::fs::create_dir_all(&sudoers_d).expect("mkdir sudoers.d");
+        std::fs::create_dir_all(&state).expect("mkdir state");
+        save_sudoers_fingerprint(&state, &sudoers_content("mahdi")).expect("fingerprint");
+        assert!(!sudoers_current_in(&sudoers_d, &state, "mahdi"));
+        fs::remove_dir_all(&base).expect("cleanup");
     }
 
     /// The prompt-free fast path only works when every command apply_tun_routing
