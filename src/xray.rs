@@ -211,7 +211,43 @@ fn custom_route_rules(custom: &Value) -> Vec<Value> {
     rules
 }
 
-fn build_node_outbound(node: &ProxyNode, tun_enabled: bool) -> Value {
+/// Minimal config used by latency probes: one SOCKS inbound on `port` and a
+/// single proxy outbound. When `bypass_tun` is set the outbound is fwmark'd so
+/// it leaves via the physical uplink instead of looping into an active TUN.
+pub fn generate_probe_config(node: &ProxyNode, port: u16, bypass_tun: bool) -> Value {
+    let mut outbounds = vec![build_node_outbound(node, bypass_tun)];
+    let mut direct_stream = json!({});
+    if bypass_tun {
+        direct_stream["sockopt"] = json!({ "mark": 255 });
+    }
+    outbounds.push(json!({
+        "tag": "direct",
+        "protocol": "freedom",
+        "settings": { "domainStrategy": "UseIP" },
+        "streamSettings": direct_stream
+    }));
+    json!({
+        "log": { "loglevel": "error" },
+        "inbounds": [{
+            "tag": "probe-in",
+            "listen": "127.0.0.1",
+            "port": port,
+            "protocol": "socks",
+            "settings": { "udp": false }
+        }],
+        "outbounds": outbounds,
+        "routing": {
+            "domainStrategy": "AsIs",
+            "rules": [{
+                "type": "field",
+                "outboundTag": "proxy",
+                "port": "0-65535"
+            }]
+        }
+    })
+}
+
+pub(crate) fn build_node_outbound(node: &ProxyNode, tun_enabled: bool) -> Value {
     let mut stream_settings = json!({
         "network": node.network,
         "security": node.security
@@ -877,6 +913,20 @@ pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_config_binds_localhost_socks_and_marks_when_tun_up() {
+        let node = crate::parser::parse_link(
+            "vless://uuid@example.com:443?type=tcp&security=none#probe",
+            None,
+        )
+        .expect("valid link");
+        let cfg = generate_probe_config(&node, 19080, true);
+        assert_eq!(cfg["inbounds"][0]["listen"], "127.0.0.1");
+        assert_eq!(cfg["inbounds"][0]["port"], 19080);
+        assert_eq!(cfg["outbounds"][0]["streamSettings"]["sockopt"]["mark"], 255);
+        assert_eq!(cfg["outbounds"][1]["tag"], "direct");
+    }
 
     #[test]
     fn http_based_transports_keep_path_and_host() {
