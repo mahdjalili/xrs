@@ -14,25 +14,25 @@ xrs is a blazing-fast proxy client built on Xray-core. It lives in your terminal
 | | xrs | Typical GUI clients |
 |---|---|---|
 | Binary size | **~2.4 MB** | 100–300 MB |
-| Idle memory (TUI, 200 servers) | **~5 MB** | 200–350 MB |
-| Connected memory (client + core) | **51 MB** | 133–387 MB |
-| Idle CPU (TUI) | **~0.2%** | n/a |
-| Status check (`xrs status`) | **~1.7 ms** | n/a |
+| Idle memory (TUI, 200 servers) | **~4.4 MB** | 200–350 MB |
+| Connected memory (client + core) | **36 MB** | 133–387 MB |
+| Idle CPU (TUI) | **~0.1%** | n/a |
+| Status check (`xrs status`) | **~1.5 ms** | n/a |
 | Dependencies | **None** (one binary, needs only glibc) | Qt / Electron runtimes |
 
-<sub>xrs figures measured for v0.3.0 on x86_64 Linux with the stripped release build: memory is resident set size, idle CPU was sampled over 30 s, and status check time is the hyperfine mean of 500 runs. The TUI runs on a single thread and peaks at ~5.6 MB while latency-testing 200 servers. The connected-memory row is the client and its proxy core together; the breakdown is below.</sub>
+<sub>xrs figures measured for v0.4.0 on x86_64 Linux with the stripped release build: memory is resident set size, idle CPU was sampled over 30 s, and status check time is the hyperfine mean of 500 runs. The TUI runs on a single thread and peaks at ~5.1 MB while latency-testing 200 servers. The connected-memory row is the client and its proxy core together; the breakdown is below.</sub>
 
 ### Connected memory, client plus core
 
-The ~5 MB figure is the xrs TUI on its own. A connected session also runs Xray-core. These numbers are that whole stack, measured on one Ubuntu 24.04 x86_64 machine against the current Linux builds of the other clients, all pointed at the same local VLESS + WebSocket server.
+The ~4.4 MB figure is the xrs TUI on its own. A connected session also runs Xray-core. The xrs column below was remeasured for v0.4.0 on Ubuntu 24.04 x86_64 against a local VLESS + WebSocket server; Throne, Hiddify, and v2rayN keep the earlier same-methodology numbers from that machine.
 
-| | **xrs 0.3.0** | Throne 1.3.2 | Hiddify 4.1.1 | v2rayN 7.24.9 |
+| | **xrs 0.4.0** | Throne 1.3.2 | Hiddify 4.1.1 | v2rayN 7.24.9 |
 |---|---:|---:|---:|---:|
-| Client | 4.4 MB | 69.2 MB | in-process | 316.2 MB |
-| Proxy core | 46.7 MB | 64.1 MB | in-process | 70.6 MB |
-| **Combined** | **51.1 MB** | 133.2 MB | 378.2 MB | 386.8 MB |
+| Client | 4.5 MB | 69.2 MB | in-process | 316.2 MB |
+| Proxy core | 31.7 MB | 64.1 MB | in-process | 70.6 MB |
+| **Combined** | **36.2 MB** | 133.2 MB | 378.2 MB | 386.8 MB |
 
-<sub>Resident set size after proxying 60 MB (three 20 MB downloads through the client's SOCKS port). RSS is summed from `/proc/<pid>/smaps_rollup` over the client and every process it spawned. Combined is that measured total. xrs is the v0.3.0 release binary with the TUI open, plus Xray-core 26.3.27 started by `xrs start` (47,808 KiB for the core, 4,528 KiB for the TUI, 52,336 KiB together). Idle, right after connect and before the download, the same pair sat at 49.2 MB. With the TUI closed, `xrs start` leaves only Xray-core, at 46.7 MB. v2rayN 7.24.9 ran its bundled Xray 26.7.28 (72,248 KiB) beside the Avalonia UI (323,836 KiB). Throne 1.3.2 served the traffic with sing-box via ThroneCore (65,600 KiB) next to the Qt UI (70,840 KiB); that build also ships Xray-core 26.9.9. Hiddify 4.1.1 loads hiddify-core inside the app process (`hiddify-core.so`), so the UI and the core are a single 387,288 KiB RSS. Proportional set size ranks the same way: 49.5 MB, 120.6 MB, 364.9 MB, 369.2 MB.</sub>
+<sub>Resident set size after proxying 60 MB (three 20 MB downloads through the client's SOCKS port). RSS is summed from `/proc/<pid>/smaps_rollup` over the client and every process it spawned. Combined is that measured total. xrs is the v0.4.0 release binary with the TUI open, plus Xray-core 26.9.30 started by `xrs start` (32,448 KiB for the core, 4,632 KiB for the TUI, 37,080 KiB together). Idle, right after connect and before the download, the same pair sat at 35.9 MB. With the TUI closed, `xrs start` leaves only Xray-core, at 31.4 MB idle / 31.7 MB after the download. v2rayN 7.24.9 ran its bundled Xray 26.7.28 (72,248 KiB) beside the Avalonia UI (323,836 KiB). Throne 1.3.2 served the traffic with sing-box via ThroneCore (65,600 KiB) next to the Qt UI (70,840 KiB); that build also ships Xray-core 26.9.9. Hiddify 4.1.1 loads hiddify-core inside the app process (`hiddify-core.so`), so the UI and the core are a single 387,288 KiB RSS. Proportional set size for the remeasured xrs stack is 34.6 MB; the earlier comparison clients ranked 120.6 MB, 364.9 MB, and 369.2 MB.</sub>
 
 ## Features
 
