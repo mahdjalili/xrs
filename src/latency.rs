@@ -53,10 +53,8 @@ impl ProbeRoute {
         let addr = resolve(host, port)?;
         let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP)).ok()?;
         // Only IPv4 is policy-routed into the tunnel, so v6 sockets stay unbound.
-        if let (Some(dev), SocketAddr::V4(_)) = (&self.bind_device, addr)
-            && let Err(e) = socket.bind_device(Some(dev.as_bytes()))
-        {
-            log::debug!("SO_BINDTODEVICE {dev} failed: {e}");
+        if let (Some(dev), SocketAddr::V4(_)) = (&self.bind_device, addr) {
+            bind_to_device(&socket, dev);
         }
         let target = SockAddr::from(addr);
         let start = Instant::now();
@@ -64,6 +62,19 @@ impl ProbeRoute {
         Some(start.elapsed().as_millis() as u64)
     }
 }
+
+/// SO_BINDTODEVICE is a Linux socket option; socket2 exposes `bind_device`
+/// only there, and TUN mode (the reason probes bind to the uplink) is
+/// Linux-only, so other platforms keep plain sockets.
+#[cfg(target_os = "linux")]
+fn bind_to_device(socket: &Socket, dev: &str) {
+    if let Err(e) = socket.bind_device(Some(dev.as_bytes())) {
+        log::debug!("SO_BINDTODEVICE {dev} failed: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bind_to_device(_socket: &Socket, _dev: &str) {}
 
 /// Prefer real through-proxy latency; fall back to a TUN-aware TCP handshake
 /// when the Xray binary is missing so the TUI still has a signal.
