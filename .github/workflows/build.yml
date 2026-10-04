@@ -7,11 +7,6 @@ on:
   push:
     tags:
       - "v*"
-    # TEMPORARY validation scaffold: runs the full build (release job stays
-    # tag-gated) to validate build-macos on real runners before a release
-    # tag is cut. Removed again in the release commit.
-    branches:
-      - master
   workflow_dispatch:
 
 permissions:
