@@ -18,7 +18,7 @@ use colored::*;
 use model::{AppConfig, RouteRule};
 use storage::*;
 use log::{debug, error, info, warn};
-use xray::{check_or_setup_tun_caps, find_xray_binary, install_tun_sudoers, tun_interface_up, XrayRunner};
+use xray::{check_or_setup_tun_caps, find_xray_binary, tun_interface_up, XrayRunner};
 
 #[derive(Parser)]
 #[command(
@@ -62,8 +62,6 @@ enum Commands {
         #[arg(help = "on | off | status")]
         mode: Option<String>,
     },
-    /// Grant CAP_NET_ADMIN permissions to Xray binary for TUN mode
-    SetupTun,
     /// Manage routing rules (Iran bypass, adblock, custom domains & IPs)
     Route {
         #[command(subcommand)]
@@ -395,24 +393,6 @@ fn main() -> Result<()> {
                 println!("\nUsage: xrs tun on | off");
             }
         },
-        Some(Commands::SetupTun) => {
-            if let Some(xray_bin) = find_xray_binary() {
-                debug!("Setting up TUN capabilities for {}", xray_bin.display());
-                match check_or_setup_tun_caps(&xray_bin) {
-                    Ok(_) => println!("{}", "✔ TUN file capabilities configured.".green().bold()),
-                    Err(e) => eprintln!("{} {e}", "✖ setcap failed:".red()),
-                }
-            } else {
-                eprintln!("{}", "✖ Xray binary not found. Run 'xrs install-xray' first.".red());
-            }
-            match install_tun_sudoers() {
-                Ok(_) => println!(
-                    "{}",
-                    "✔ Passwordless sudo installed for TUN routing (one-time auth, no more prompts).".green().bold()
-                ),
-                Err(e) => eprintln!("{} {e}", "✖ sudoers install failed:".red()),
-            }
-        }
         Some(Commands::Route { action }) => match action {
             RouteAction::List => {
                 println!("{}", "Routing Rules:".bold());
@@ -1089,6 +1069,15 @@ fn install_xray_and_assets() -> Result<()> {
         .status()?;
     if !status.success() {
         return Err(eyre!("Failed to set executable permissions on Xray binary."));
+    }
+
+    // Replacing the binary silently drops its file capabilities, which would
+    // make every later TUN connect prompt for auth again. Re-grant them now,
+    // while the user is right here (only when TUN mode is in use).
+    if load_config().tun.enabled
+        && let Err(e) = check_or_setup_tun_caps(&xray_path)
+    {
+        warn!("Could not restore TUN capabilities after the update: {e}");
     }
 
     // Report the installed binary version when possible.
