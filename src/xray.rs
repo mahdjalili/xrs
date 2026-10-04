@@ -478,12 +478,14 @@ impl XrayRunner {
         })?;
 
         // TUN mode setup is performed automatically here (and on every start,
-        // idempotently) so the manual `xrs setup-tun` step is optional: file
+        // idempotently) so no manual command is needed: file
         // capabilities are mandatory, the sudoers rule is best effort since
         // apply_tun_routing falls back to a single pkexec shell without it.
         if cfg.tun.enabled {
             if let Err(e) = check_or_setup_tun_caps(&xray_bin) {
-                return Err(format!("TUN mode requires network capability: {e}. Run 'xrs setup-tun'"));
+                return Err(format!(
+                    "TUN mode requires network capability: {e}. Run 'xrs install-xray' to (re)install the core with capabilities"
+                ));
             }
             if !tun_sudoers_installed()
                 && let Err(e) = install_tun_sudoers()
@@ -541,7 +543,7 @@ impl XrayRunner {
         if cfg.tun.enabled {
             if let Err(e) = apply_tun_routing(&cfg.tun.name, cfg.tun.mtu, true) {
                 let _ = Self::stop();
-                return Err(format!("TUN routing failed: {e}. Run 'xrs setup-tun' once to allow it."));
+                return Err(format!("TUN routing failed: {e}. Connect once from a terminal so the one-time setup can finish."));
             }
         } else {
             set_system_proxy(true, cfg.inbounds.socks_port, cfg.inbounds.http_port);
@@ -648,15 +650,36 @@ fn is_valid_ifname(name: &str) -> bool {
 }
 
 struct TunCmd {
-    prog: &'static str,
+    prog: String,
     args: Vec<String>,
     allow_failure: bool,
 }
 
+/// Where the routing tools may live across distros (Debian puts both in
+/// /usr/sbin, usrmerged systems alias /bin and /sbin to /usr/*). resolve_tool
+/// and the sudoers rule must stay in agreement: a path the rule does not
+/// cover makes `sudo -n` fail and TUN routing fall back to a pkexec password
+/// prompt on every connect.
+const TOOL_DIRS: [&str; 4] = ["/usr/bin", "/usr/sbin", "/bin", "/sbin"];
+
+/// Absolute path of a routing tool; falls back to /usr/bin/<name> (covered by
+/// the sudoers rule) when nothing resolves, so the failure mode is unchanged.
+fn resolve_tool(name: &str) -> String {
+    TOOL_DIRS
+        .iter()
+        .map(|dir| Path::new(dir).join(name))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| Path::new("/usr/bin").join(name))
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
+    let ip = resolve_tool("ip");
+    let sysctl = resolve_tool("sysctl");
     vec![
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "link".to_string(),
                 "set".to_string(),
@@ -669,7 +692,7 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
             allow_failure: false,
         },
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "addr".to_string(),
                 "replace".to_string(),
@@ -680,7 +703,7 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
             allow_failure: false,
         },
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "route".to_string(),
                 "replace".to_string(),
@@ -694,7 +717,7 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
         },
         // Delete stale rule first; failure means "no old rule", which is fine.
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "rule".to_string(),
                 "del".to_string(),
@@ -707,7 +730,7 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
             allow_failure: true,
         },
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "rule".to_string(),
                 "add".to_string(),
@@ -720,12 +743,12 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
             allow_failure: false,
         },
         TunCmd {
-            prog: "/usr/bin/sysctl",
+            prog: sysctl.clone(),
             args: vec!["-w".to_string(), "net.ipv4.conf.all.rp_filter=2".to_string()],
             allow_failure: false,
         },
         TunCmd {
-            prog: "/usr/bin/sysctl",
+            prog: sysctl.clone(),
             args: vec![
                 "-w".to_string(),
                 "net.ipv4.conf.default.rp_filter=2".to_string(),
@@ -734,7 +757,7 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
         },
         // Per-interface sysctl may fail if the interface vanished; not fatal.
         TunCmd {
-            prog: "/usr/bin/sysctl",
+            prog: sysctl.clone(),
             args: vec![
                 "-w".to_string(),
                 format!("net.ipv4.conf.{ifname}.rp_filter=2"),
@@ -745,9 +768,10 @@ fn tun_up_commands(ifname: &str, mtu: u32) -> Vec<TunCmd> {
 }
 
 fn tun_down_commands() -> Vec<TunCmd> {
+    let ip = resolve_tool("ip");
     vec![
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "rule".to_string(),
                 "del".to_string(),
@@ -760,7 +784,7 @@ fn tun_down_commands() -> Vec<TunCmd> {
             allow_failure: true,
         },
         TunCmd {
-            prog: "/usr/bin/ip",
+            prog: ip.clone(),
             args: vec![
                 "route".to_string(),
                 "flush".to_string(),
@@ -834,7 +858,7 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
 
     // Fast path: passwordless sudo per command (zero prompts after one-time setup).
     // Only /usr/bin/ip and /usr/bin/sysctl are used here so the sudoers rule
-    // from `xrs setup-tun` covers every command. Tolerant commands (stale
+    // from the sudoers rule covers every command. Tolerant commands (stale
     // rule cleanup) ignore failure and continue.
     let commands = if up {
         tun_up_commands(tun_name, mtu)
@@ -843,7 +867,7 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
     };
     let mut sudo_ok = true;
     for cmd in &commands {
-        if !try_sudo(cmd.prog, &cmd.args) && !cmd.allow_failure {
+        if !try_sudo(&cmd.prog, &cmd.args) && !cmd.allow_failure {
             sudo_ok = false;
             break;
         }
@@ -861,11 +885,28 @@ pub fn apply_tun_routing(tun_name: &str, mtu: u32, up: bool) -> Result<(), Strin
     }
 }
 
-/// Whether the passwordless sudoers rule installed by `xrs setup-tun` is
-/// already in place. The file is root-owned (0440), so for a user process
-/// existence is all that can be verified.
+/// Whether the passwordless sudoers rule for TUN routing is already in place.
+/// The file is root-owned (0440), so for a user process existence is all that
+/// can be verified.
 fn tun_sudoers_installed() -> bool {
     fs::metadata("/etc/sudoers.d/xrs").is_ok()
+}
+
+/// One rule line covering every path resolve_tool can pick for `ip` and
+/// `sysctl` across distros. Must stay in sync with TOOL_DIRS: a command path
+/// the rule misses makes `sudo -n` fail and drops TUN routing into a pkexec
+/// password prompt on every connect, switch, and restart.
+fn sudoers_content(user: &str) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    for tool in ["ip", "sysctl"] {
+        for dir in TOOL_DIRS {
+            entries.push(format!("{dir}/{tool} *"));
+        }
+    }
+    format!(
+        "# xrs TUN routing - passwordless ip/sysctl for TUN mode (installed by xrs)\n{user} ALL=(root) NOPASSWD: {}\n",
+        entries.join(", ")
+    )
 }
 
 pub fn install_tun_sudoers() -> Result<(), String> {
@@ -879,9 +920,7 @@ pub fn install_tun_sudoers() -> Result<(), String> {
         return Err("Invalid username for sudoers rule".to_string());
     }
 
-    let content = format!(
-        "# xrs TUN routing - passwordless ip/sysctl for TUN mode (installed by `xrs setup-tun`)\n{user} ALL=(root) NOPASSWD: /usr/bin/ip *, /sbin/ip *, /usr/bin/sysctl *, /usr/sbin/sysctl *\n"
-    );
+    let content = sudoers_content(&user);
 
     // Write via a single elevated shell so the user authenticates exactly once.
     // Use a quoted heredoc-style printf to avoid shell injection from `content`
@@ -1023,5 +1062,45 @@ mod tests {
         assert!(!tun_interface_up(""));
         assert!(!tun_interface_up("bad name!"));
         assert!(!tun_interface_up("xrs-no-such-interface"));
+    }
+
+    #[test]
+    fn resolves_tools_from_candidate_dirs_with_covered_fallback() {
+        let sh = resolve_tool("sh");
+        assert!(
+            sh.starts_with('/') && TOOL_DIRS.iter().any(|d| sh.starts_with(&format!("{d}/"))),
+            "resolved path {sh} is outside the sudoers-covered directories"
+        );
+        assert_eq!(resolve_tool("xrs-no-such-tool-xyz"), "/usr/bin/xrs-no-such-tool-xyz");
+    }
+
+    #[test]
+    fn sudoers_rule_covers_every_candidate_tool_path() {
+        let content = sudoers_content("mahdi");
+        for tool in ["ip", "sysctl"] {
+            for dir in TOOL_DIRS {
+                assert!(content.contains(&format!("{dir}/{tool} *")), "rule misses {dir}/{tool}");
+            }
+        }
+        // Passwordless setcap would be a full privilege-escalation hole.
+        assert!(!content.contains("setcap"));
+    }
+
+    /// The prompt-free fast path only works when every command apply_tun_routing
+    /// executes is matched by the sudoers rule; anything unmatched sends TUN
+    /// routing to a pkexec password prompt on every connect and switch.
+    #[test]
+    fn every_routing_command_is_covered_by_the_sudoers_rule() {
+        let content = sudoers_content("u");
+        let up = tun_up_commands("xrs-tun", 1500);
+        let down = tun_down_commands();
+        for cmd in up.iter().chain(&down) {
+            assert!(
+                cmd.prog.starts_with('/') && content.contains(&format!("{} *", cmd.prog)),
+                "sudoers rule does not cover {} ({:?})",
+                cmd.prog,
+                cmd.args
+            );
+        }
     }
 }

@@ -52,10 +52,9 @@ Grab the tarball for your machine from the [latest release](https://github.com/m
 tar xzf xrs-*-linux-amd64.tar.gz
 install -Dm755 xrs-*-linux-amd64/xrs ~/.local/bin/xrs
 xrs install-xray   # fetches the latest Xray engine + official geo data (first run only)
-xrs setup-tun      # optional: TUN setup also runs automatically on first TUN start
 ```
 
-No root needed. Everything lives in your home directory.
+No root needed. Everything lives in your home directory. TUN mode's one-time setup (file capabilities + passwordless sudo for routing) runs automatically the first time it starts.
 
 ## Quick start
 
