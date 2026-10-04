@@ -150,39 +150,55 @@ impl Default for InboundConfig {
 
 impl Default for RoutingConfig {
     fn default() -> Self {
+        // Rules here may only reference geo codes that exist in the OFFICIAL
+        // geoip/geosite.dat shipped with the Xray release: a missing code is
+        // a fatal startup error. The chocolate4u Iran preset (geosite:ir,
+        // malware, phishing, ...) is opt-in via `xrs route setup-iran`,
+        // which installs its own dat files.
         Self {
             domain_strategy: "IPIfNonMatch".to_string(),
-            rules: vec![
-                RouteRule {
-                    id: "iran_bypass".to_string(),
-                    name: "Iran Bypass (chocolate4u)".to_string(),
-                    enabled: true,
-                    description: "Bypasses domestic Iranian domains, *.ir, and IP ranges".to_string(),
-                    direct_domains: vec!["geosite:ir".to_string(), "regexp:.*\\.ir$".to_string()],
-                    direct_ips: vec!["geoip:ir".to_string(), "geoip:private".to_string()],
-                    block_domains: Vec::new(),
-                    block_ips: Vec::new(),
-                    proxy_domains: Vec::new(),
-                    proxy_ips: Vec::new(),
-                },
-                RouteRule {
-                    id: "adblock".to_string(),
-                    name: "AdBlock & Malware".to_string(),
-                    enabled: true,
-                    description: "Blocks advertising, tracking, phishing, and malware domains".to_string(),
-                    direct_domains: Vec::new(),
-                    direct_ips: Vec::new(),
-                    block_domains: vec![
-                        "geosite:category-ads-all".to_string(),
-                        "geosite:malware".to_string(),
-                        "geosite:phishing".to_string(),
-                        "geosite:cryptominers".to_string(),
-                    ],
-                    block_ips: vec!["geoip:malware".to_string(), "geoip:phishing".to_string()],
-                    proxy_domains: Vec::new(),
-                    proxy_ips: Vec::new(),
-                },
-            ],
+            rules: vec![RouteRule {
+                id: "adblock".to_string(),
+                name: "AdBlock".to_string(),
+                enabled: true,
+                description: "Blocks advertising and tracking domains".to_string(),
+                direct_domains: Vec::new(),
+                direct_ips: Vec::new(),
+                block_domains: vec!["geosite:category-ads-all".to_string()],
+                block_ips: Vec::new(),
+                proxy_domains: Vec::new(),
+                proxy_ips: Vec::new(),
+            }],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Xray aborts at startup when a rule references a geo code missing from
+    /// the dat files, and fresh installs only get the official geoip/geosite
+    /// bundled with the Xray release. Defaults must stay within that set.
+    #[test]
+    fn default_rules_load_with_official_geodata_and_iran_is_opt_in() {
+        let cfg = RoutingConfig::default();
+        assert!(cfg.rules.iter().all(|r| r.id != "iran_bypass"));
+        let official_domains = ["geosite:category-ads-all"];
+        let official_ips = ["geoip:private"];
+        for rule in &cfg.rules {
+            for d in rule.direct_domains.iter().chain(&rule.block_domains) {
+                assert!(
+                    !d.starts_with("geosite:") || official_domains.contains(&d.as_str()),
+                    "geosite code absent from official geosite.dat: {d}"
+                );
+            }
+            for ip in rule.direct_ips.iter().chain(&rule.block_ips) {
+                assert!(
+                    !ip.starts_with("geoip:") || official_ips.contains(&ip.as_str()),
+                    "geoip code absent from official geoip.dat: {ip}"
+                );
+            }
         }
     }
 }

@@ -84,7 +84,7 @@ enum Commands {
         #[arg(help = "on | off")]
         mode: String,
     },
-    /// Download and install Xray-core binary and chocolate4u Iran routing rules
+    /// Download and install the Xray-core binary and its official geo routing data
     InstallXray,
 }
 
@@ -117,7 +117,7 @@ enum RouteAction {
         #[arg(short, long, help = "Skip confirmation prompt")]
         yes: bool,
     },
-    /// Setup / reinstall chocolate4u Iran routing rule preset
+    /// Install the optional chocolate4u Iran preset (routing data + bypass rule)
     SetupIran,
 }
 
@@ -534,7 +534,12 @@ fn main() -> Result<()> {
                 }
             }
             RouteAction::SetupIran => {
-                if setup_iran_rule_preset(&mut cfg).is_ok() {
+                // Opt-in preset: fetch its chocolate4u routing data first —
+                // the official geodata from install-xray lacks the preset's
+                // geo codes, which would fatally break Xray at startup.
+                if let Err(e) = install_iran_geodata() {
+                    eprintln!("{} {e}", "✖ Iran routing data download failed:".red());
+                } else if setup_iran_rule_preset(&mut cfg).is_ok() {
                     println!("{}", "✔ Iran bypass routing rule preset installed and enabled!".green().bold());
                     if XrayRunner::is_running() {
                         let _ = XrayRunner::restart(&cfg);
@@ -1047,9 +1052,30 @@ fn install_xray_and_assets() -> Result<()> {
         return Err(eyre!("Failed to download Xray-core release ({tag})."));
     }
 
-    println!("{}", "2. Extracting Xray binary...".cyan());
+    println!("{}", "2. Extracting Xray binary and geo routing data...".cyan());
+    // The release zip ships the official geoip/geosite data. Keep the
+    // chocolate4u data untouched when the opt-in Iran preset is in use:
+    // replacing it would fatally break the preset's geo lookups at startup.
+    let iran_preset_on = load_config()
+        .routing
+        .rules
+        .iter()
+        .any(|r| r.id == "iran_bypass" && r.enabled);
+    let mut unzip_args = vec![
+        "-o".to_string(),
+        zip_dest.to_string_lossy().to_string(),
+        "xray".to_string(),
+    ];
+    if iran_preset_on {
+        println!("{}", "   Iran routing preset is enabled — keeping its chocolate4u routing data.".cyan());
+    } else {
+        unzip_args.push("geoip.dat".to_string());
+        unzip_args.push("geosite.dat".to_string());
+    }
+    unzip_args.push("-d".to_string());
+    unzip_args.push(data_dir.to_string_lossy().to_string());
     let status = std::process::Command::new("unzip")
-        .args(["-o", &zip_dest.to_string_lossy(), "xray", "-d", &data_dir.to_string_lossy()])
+        .args(&unzip_args)
         .status()?;
     if !status.success() {
         return Err(eyre!("Failed to unzip Xray binary."));
@@ -1065,18 +1091,6 @@ fn install_xray_and_assets() -> Result<()> {
         return Err(eyre!("Failed to set executable permissions on Xray binary."));
     }
 
-    println!("{}", "3. Downloading chocolate4u/Iran-v2ray-rules (geoip.dat & geosite.dat)...".cyan());
-    let geoip_url = "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat";
-    let geosite_url = "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat";
-
-    let _ = std::process::Command::new("curl")
-        .args(["-L", "-f", "-o", &data_dir.join("geoip.dat").to_string_lossy(), geoip_url])
-        .status()?;
-
-    let _ = std::process::Command::new("curl")
-        .args(["-L", "-f", "-o", &data_dir.join("geosite.dat").to_string_lossy(), geosite_url])
-        .status()?;
-
     // Report the installed binary version when possible.
     let ver = std::process::Command::new(&xray_path)
         .arg("version")
@@ -1086,9 +1100,44 @@ fn install_xray_and_assets() -> Result<()> {
         .and_then(|s| s.lines().next().map(str::to_string))
         .unwrap_or_else(|| tag.clone());
 
-    println!("{}", "✔ Xray core and Iran routing rules installed successfully!".green().bold());
+    println!("{}", "✔ Xray core installed successfully!".green().bold());
     println!("  Version:  {}", ver.cyan());
     println!("  Location: {}", data_dir.display());
+    if iran_preset_on {
+        println!("  Iran routing preset stays installed (data: chocolate4u).");
+    } else {
+        println!("  Optional: Iran routing rules via '{}'", "xrs route setup-iran".cyan());
+    }
 
+    Ok(())
+}
+
+/// Downloads the chocolate4u Iran routing data over the dat files in the data
+/// dir. The Iran preset is opt-in, so this runs only from `xrs route
+/// setup-iran` (and the TUI preset action) — never from install-xray, whose
+/// official geodata cannot satisfy the preset's geo lookups.
+fn install_iran_geodata() -> Result<(), String> {
+    let data_dir = get_data_dir();
+    std::fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {e}"))?;
+    for (file, url) in [
+        (
+            "geoip.dat",
+            "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat",
+        ),
+        (
+            "geosite.dat",
+            "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat",
+        ),
+    ] {
+        println!("{}", format!("Downloading chocolate4u {file}...").cyan());
+        let dest = data_dir.join(file);
+        let status = std::process::Command::new("curl")
+            .args(["-L", "-f", "-o", &dest.to_string_lossy(), url])
+            .status()
+            .map_err(|e| format!("Failed to run curl: {e}"))?;
+        if !status.success() {
+            return Err(format!("Failed to download {file}."));
+        }
+    }
     Ok(())
 }

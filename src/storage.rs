@@ -280,7 +280,23 @@ pub fn setup_iran_rule_preset(cfg: &mut AppConfig) -> Result<(), String> {
         proxy_domains: Vec::new(),
         proxy_ips: Vec::new(),
     };
-    add_route_rule(cfg, rule)
+    add_route_rule(cfg, rule)?;
+
+    // The chocolate4u dat files also carry the security categories that the
+    // official geodata lacks, so the AdBlock preset regains its extended
+    // blocklists once this preset's data is installed.
+    if let Some(adblock) = cfg.routing.rules.iter_mut().find(|r| r.id == "adblock") {
+        adblock.name = "AdBlock & Malware".to_string();
+        adblock.description = "Blocks advertising, tracking, phishing, and malware domains".to_string();
+        adblock.block_domains = vec![
+            "geosite:category-ads-all".to_string(),
+            "geosite:malware".to_string(),
+            "geosite:phishing".to_string(),
+            "geosite:cryptominers".to_string(),
+        ];
+        adblock.block_ips = vec!["geoip:malware".to_string(), "geoip:phishing".to_string()];
+    }
+    save_config(cfg).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
