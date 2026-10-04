@@ -178,7 +178,7 @@ enum NodeAction {
         #[arg(short, long, help = "Skip confirmation prompt")]
         yes: bool,
     },
-    /// Test latency/ping to all nodes
+    /// Test real (through-proxy) latency of all nodes
     Ping,
 }
 
@@ -740,13 +740,25 @@ fn main() -> Result<()> {
                 }
             }
             NodeAction::Ping => {
-                println!("Testing latency to all nodes...");
-                let route = latency::ProbeRoute::detect(&cfg.tun.name);
-                if route.bypasses_tunnel() {
-                    println!("  {}", "TUN is active; probing via the physical uplink.".dimmed());
+                println!("Testing real latency (through-proxy) for all nodes...");
+                if find_xray_binary().is_none() {
+                    eprintln!(
+                        "{}",
+                        "✖ Xray binary not found. Run 'xrs install-xray' first.".red()
+                    );
+                    return Ok(());
+                }
+                let tun_up = std::path::Path::new("/sys/class/net")
+                    .join(&cfg.tun.name)
+                    .exists();
+                if tun_up {
+                    println!(
+                        "  {}",
+                        "TUN is active; probe outbounds bypass the tunnel via fwmark.".dimmed()
+                    );
                 }
                 for node in &mut cfg.nodes {
-                    node.ping_ms = route.tcp_latency(&node.server, node.port);
+                    node.ping_ms = latency::real_latency(node, &cfg.tun.name);
                     match node.ping_ms {
                         Some(ms) => println!("  ✔ {:<30} -> {}ms", node.name.cyan(), ms),
                         None => println!("  ✖ {:<30} -> unreachable", node.name.dimmed()),
@@ -936,19 +948,49 @@ fn show_status(cfg: &AppConfig, json_output: bool) {
     println!("Subscriptions:{}", cfg.subscriptions.len());
 }
 
+/// Fallback when the GitHub API is unreachable. Keep this equal to the newest
+/// known Xray-core tag (including prereleases — that is how Xray ships).
+const XRAY_FALLBACK_TAG: &str = "v26.9.30";
+
+fn xray_linux_asset() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "Xray-linux-arm64-v8a.zip",
+        _ => "Xray-linux-64.zip",
+    }
+}
+
+fn latest_xray_release_tag() -> Option<String> {
+    let resp = ureq::get("https://api.github.com/repos/XTLS/Xray-core/releases")
+        .header("User-Agent", concat!("xrs/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .ok()?;
+    let body = resp.into_body().read_to_string().ok()?;
+    let releases: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
+    releases
+        .into_iter()
+        .find(|r| r.get("draft").and_then(|d| d.as_bool()) != Some(true))
+        .and_then(|r| r.get("tag_name")?.as_str().map(str::to_string))
+}
+
 fn install_xray_and_assets() -> Result<()> {
     let data_dir = get_data_dir();
     std::fs::create_dir_all(&data_dir)?;
 
-    println!("{}", "1. Downloading Xray-core binary...".cyan());
-    let xray_url = "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip";
+    let tag = latest_xray_release_tag().unwrap_or_else(|| {
+        warn!("Could not resolve latest Xray-core tag; using {XRAY_FALLBACK_TAG}");
+        XRAY_FALLBACK_TAG.to_string()
+    });
+    let asset = xray_linux_asset();
+    let xray_url = format!("https://github.com/XTLS/Xray-core/releases/download/{tag}/{asset}");
+
+    println!("{}", format!("1. Downloading Xray-core {tag} ({asset})...").cyan());
     let zip_dest = data_dir.join("xray.zip");
 
     let status = std::process::Command::new("curl")
-        .args(["-L", "-f", "-o", &zip_dest.to_string_lossy(), xray_url])
+        .args(["-L", "-f", "-o", &zip_dest.to_string_lossy(), &xray_url])
         .status()?;
     if !status.success() {
-        return Err(eyre!("Failed to download Xray-core release."));
+        return Err(eyre!("Failed to download Xray-core release ({tag})."));
     }
 
     println!("{}", "2. Extracting Xray binary...".cyan());
@@ -981,7 +1023,17 @@ fn install_xray_and_assets() -> Result<()> {
         .args(["-L", "-f", "-o", &data_dir.join("geosite.dat").to_string_lossy(), geosite_url])
         .status()?;
 
+    // Report the installed binary version when possible.
+    let ver = std::process::Command::new(&xray_path)
+        .arg("version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.lines().next().map(str::to_string))
+        .unwrap_or_else(|| tag.clone());
+
     println!("{}", "✔ Xray core and Iran routing rules installed successfully!".green().bold());
+    println!("  Version:  {}", ver.cyan());
     println!("  Location: {}", data_dir.display());
 
     Ok(())
