@@ -17,7 +17,7 @@ use eyre::{eyre, Result};
 use colored::*;
 use model::{AppConfig, RouteRule};
 use storage::*;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use xray::{check_or_setup_tun_caps, find_xray_binary, tun_interface_up, XrayRunner};
 
 #[derive(Parser)]
@@ -38,8 +38,7 @@ enum Commands {
     Tui,
     /// Start the proxy daemon in the background (installs and starts the systemd user service)
     Start,
-    /// Run the proxy daemon in the foreground (internal: the systemd service entry point)
-    #[command(hide = true)]
+    /// Run the proxy daemon in the foreground (the systemd service entry point)
     Run,
     /// Manage xrs systemd user service (install, start, stop, restart, status)
     Service {
@@ -191,11 +190,6 @@ fn main() -> Result<()> {
 
     match cli.command {
         None | Some(Commands::Tui) => {
-            // Opening xrs counts as a start: make sure the background service
-            // is up so the proxy keeps running after the terminal closes.
-            if !service::ensure_started() {
-                debug!("No usable systemd user session; Xray will be managed directly");
-            }
             ui::run_tui().map_err(|e| eyre!("{e}"))?;
         }
         Some(Commands::Start) => {
