@@ -45,7 +45,7 @@ The ~4.6 MB idle figure is the xrs TUI on its own. A connected session also runs
 - **🔒 Full-tunnel TUN mode (Linux):** route the entire system through the proxy at the network layer, not just apps that respect proxy settings. The one-time setup runs itself; after that it's a single `T` keypress.
 - **🧭 Routing rules you control:** bypass lists, ad & malware blocking, and custom domain/IP rules. Toggle any rule and xrs applies it for you. The optional Iran-routing preset (`xrs route setup-iran`) sends domestic traffic direct — installed only when you ask for it.
 - **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://`, or `ss://` link, or point at a subscription URL and let it sync.
-- **🔄 Stays connected in the background:** the first launch installs and starts a systemd user service, so the proxy keeps running after the terminal closes — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it.
+- **🔄 Runs in the background when you ask:** `xrs start` installs, enables, and starts a systemd user service, so the proxy keeps running after the terminal closes — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it. Opening the interactive TUI alone starts nothing.
 - **🧩 Bar widget:** an optional native top-bar dropdown with an on/off switch, one-click server switching, and quick actions.
 
 ## Quick start
@@ -59,7 +59,7 @@ xrs toggle                   # connect / disconnect
 xrs tun on                   # full-system tunnel mode (Linux)
 ```
 
-The first launch also installs and starts a background systemd user service, so opening xrs once keeps the proxy running in the background. `xrs start` does the same from scripts (falling back to spawning Xray directly on machines without systemd); `xrs stop` stops it.
+`xrs start` installs and starts the background systemd user service, so the proxy keeps running with no terminal open (on machines without systemd it falls back to spawning Xray directly); `xrs stop` stops it. Opening the interactive TUI does not start the service — connecting there runs the core directly.
 
 ## Install
 
