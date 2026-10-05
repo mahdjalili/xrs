@@ -44,16 +44,12 @@ pub struct PingTarget {
 
 pub fn spawn_connection(tx: Sender<TaskEvent>, op: ConnOp, cfg: AppConfig) {
     thread::spawn(move || {
-        // The background service owns the daemon when systemd is available;
-        // Xray is managed directly only as a fallback.
+        // The TUI manages the core directly: connecting or reconnecting here
+        // must not install, enable, or start the background service — that is
+        // `xrs start`'s job. Disconnecting still stops the unit when it is
+        // active, otherwise Restart=on-failure would revive the core.
         let result = match op {
-            ConnOp::Connect => {
-                if service::ensure_started() {
-                    Ok(())
-                } else {
-                    XrayRunner::start(&cfg).map(|_| ())
-                }
-            }
+            ConnOp::Connect => XrayRunner::start(&cfg).map(|_| ()),
             ConnOp::Disconnect => {
                 if service::stop_unit() {
                     Ok(())
@@ -61,13 +57,7 @@ pub fn spawn_connection(tx: Sender<TaskEvent>, op: ConnOp, cfg: AppConfig) {
                     XrayRunner::stop()
                 }
             }
-            ConnOp::Reconnect => {
-                if service::restart_unit() {
-                    Ok(())
-                } else {
-                    XrayRunner::restart(&cfg).map(|_| ())
-                }
-            }
+            ConnOp::Reconnect => XrayRunner::restart(&cfg).map(|_| ()),
         };
         let _ = tx.send(TaskEvent::Connection { op, result });
     });
