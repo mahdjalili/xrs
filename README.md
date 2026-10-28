@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="xrs logo" width="160" />
+</p>
+
 # xrs
 
 **The featherweight Xray client — one binary, your whole proxy, right in the terminal.**
