@@ -147,6 +147,7 @@ pub fn render(app: &mut App, f: &mut Frame) {
         Overlay::None => {}
         Overlay::Help => render_help(f, area, &p),
         Overlay::Add(_) => render_add(f, app, area, &p),
+        Overlay::Dns { .. } => render_dns(f, app, area, &p),
         Overlay::Confirm(c) => render_confirm(f, area, &c.title, &c.message, &p),
     }
 }
@@ -628,18 +629,24 @@ fn render_node_details(f: &mut Frame, app: &App, area: Rect, p: &Palette) {
 }
 
 fn render_rule_details(f: &mut Frame, app: &App, area: Rect, p: &Palette) {
+    let mut lines = vec![
+        Line::from("DNS (e to edit)").fg(p.accent).bold(),
+        kv("Remote", app.cfg.dns.remote.clone(), Style::new().fg(p.fg), p),
+        kv("Direct", app.cfg.dns.direct.clone(), Style::new().fg(p.fg), p),
+        Line::default(),
+    ];
     let Some(r) = app.rules.selected().and_then(|i| app.cfg.routing.rules.get(i)) else {
-        f.render_widget(details_block(p), area);
+        f.render_widget(Paragraph::new(lines).block(details_block(p)).wrap(Wrap { trim: false }), area);
         return;
     };
-    let mut lines = vec![
+    lines.extend([
         Line::from(r.name.clone()).fg(p.bright).bold(),
         if r.enabled {
             Line::from("◉ enabled").fg(p.ok)
         } else {
             Line::from("○ disabled").fg(p.muted)
         },
-    ];
+    ]);
     if !r.description.is_empty() {
         lines.push(Line::default());
         lines.push(Line::from(r.description.clone()).fg(p.fg));
@@ -701,7 +708,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let conn = if app.running { "disconnect" } else { "connect" };
     let mut out = match app.tab {
         Tab::Servers => vec![("enter", "use server"), ("space", conn), ("/", "filter"), ("p", "ping"), ("s", "sort"), ("t", "tun"), ("a", "add")],
-        Tab::Routing => vec![("space", "toggle"), ("i", "preset"), ("d", "delete"), ("c", conn), ("t", "tun")],
+        Tab::Routing => vec![("space", "toggle"), ("e", "DNS"), ("i", "preset"), ("d", "delete"), ("c", conn), ("t", "tun")],
         Tab::Subscriptions => vec![("u", "update"), ("a", "add"), ("d", "delete"), ("c", conn)],
     };
     out.extend([("tab", "switch"), ("?", "help"), ("q", "quit")]);
@@ -765,7 +772,7 @@ fn render_help(f: &mut Frame, area: Rect, p: &Palette) {
         ("Navigate", &[("↑↓ j k", "move"), ("g G", "first / last"), ("PgUp PgDn", "page"), ("tab 1 2 3", "switch view"), ("mouse", "scroll, click, click again to connect")]),
         ("Connection", &[("enter", "connect to selected server"), ("space c", "connect / disconnect"), ("x", "disconnect"), ("t", "toggle TUN mode")]),
         ("Servers", &[("/", "filter (name, address, protocol…)"), ("s", "cycle sort order"), ("p", "test latency of all servers"), ("y", "copy share link"), ("a", "add link or subscription (or just paste)"), ("d", "delete")]),
-        ("Routing & subscriptions", &[("space", "toggle rule"), ("i", "install Iran bypass preset"), ("u", "update all subscriptions")]),
+        ("Routing & subscriptions", &[("space", "toggle rule"), ("e", "edit remote and direct DNS"), ("i", "install Iran bypass preset"), ("u", "update all subscriptions")]),
         ("General", &[("?", "toggle this help"), ("q ctrl-c", "quit")]),
     ];
     let mut lines = Vec::new();
@@ -824,6 +831,28 @@ fn render_add(f: &mut Frame, app: &App, area: Rect, p: &Palette) {
     };
     f.render_widget(Paragraph::new(detected), status);
     f.render_widget(key_line(&[("enter", "add"), ("esc", "cancel"), ("ctrl-u", "clear")], p), keys);
+}
+
+fn render_dns(f: &mut Frame, app: &App, area: Rect, p: &Palette) {
+    let Overlay::Dns { fields, active } = &app.overlay else { return };
+    let inner = modal(f, area, 84, 11, "DNS settings", p.accent, p);
+    let rows = Layout::vertical([
+        Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+        Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1),
+    ]).split(inner);
+    for (i, label) in ["Remote DNS (through proxy)", "Direct DNS (direct-domain rules)"].iter().enumerate() {
+        let label_row = if i == 0 { 0 } else { 3 };
+        f.render_widget(Paragraph::new(*label).fg(if *active == i { p.accent } else { p.muted }), rows[label_row]);
+        let field = rows[label_row + 1];
+        f.render_widget(Block::new().style(Style::new().bg(p.selection)), field);
+        let field_inner = field.inner(Margin::new(1, 0));
+        let (visible, col) = fields[i].viewport(field_inner.width.saturating_sub(1) as usize);
+        f.render_widget(Paragraph::new(visible.to_string()).fg(p.bright), field_inner);
+        if *active == i && field_inner.width > 0 && field_inner.height > 0 {
+            f.set_cursor_position((field_inner.x + col as u16, field_inner.y));
+        }
+    }
+    f.render_widget(key_line(&[("tab", "switch"), ("enter", "save"), ("esc", "cancel")], p), rows[6]);
 }
 
 fn render_confirm(f: &mut Frame, area: Rect, title: &str, message: &str, p: &Palette) {
@@ -1030,6 +1059,24 @@ mod tests {
         let mut app = app(Vec::new());
         let screen = draw(&mut app, 100, 24);
         assert!(screen.contains("No servers yet"));
+    }
+
+    #[test]
+    fn routing_shows_dns_without_rules_and_editor_renders() {
+        let mut app = app(Vec::new());
+        app.tab = Tab::Routing;
+        app.cfg.routing.rules.clear();
+        let screen = draw(&mut app, 150, 30);
+        assert!(screen.contains("DNS (e to edit)"));
+        assert!(screen.contains("https://1.1.1.1/dns-query"));
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('e'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let screen = draw(&mut app, 150, 30);
+        assert!(screen.contains("DNS settings"));
+        assert!(screen.contains("Remote DNS (through proxy)"));
+        assert!(screen.contains("Direct DNS (direct-domain rules)"));
     }
 
     #[test]

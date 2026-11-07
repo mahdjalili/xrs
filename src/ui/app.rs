@@ -163,6 +163,7 @@ pub enum Overlay {
     None,
     Help,
     Add(TextInput),
+    Dns { fields: [TextInput; 2], active: usize },
     Confirm(Confirm),
 }
 
@@ -775,6 +776,7 @@ impl App {
     fn on_paste(&mut self, text: &str) {
         match &mut self.overlay {
             Overlay::Add(input) => input.insert_str(text.trim()),
+            Overlay::Dns { fields, active } => fields[*active].insert_str(text),
             Overlay::None if self.filter_editing => {
                 self.filter.insert_str(text.trim());
                 self.reselect_node(None);
@@ -809,6 +811,36 @@ impl App {
                     KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc => {}
                     _ => self.overlay = Overlay::Confirm(c),
                 }
+                return;
+            }
+            Overlay::Dns { mut fields, mut active } => {
+                match key.code {
+                    KeyCode::Esc => return,
+                    KeyCode::Tab | KeyCode::BackTab => active = 1 - active,
+                    KeyCode::Enter => {
+                        let dns = crate::model::DnsConfig {
+                            remote: fields[0].value().to_string(),
+                            direct: fields[1].value().to_string(),
+                        };
+                        if let Err(e) = dns.validate() {
+                            self.notify(ToastLevel::Error, e);
+                        } else if !self.config_locked() {
+                            let mut cfg = self.cfg.clone();
+                            cfg.dns = dns;
+                            match save_config(&cfg) {
+                                Ok(()) => {
+                                    self.cfg = cfg;
+                                    self.notify(ToastLevel::Info, "DNS settings saved");
+                                    self.request_reconnect();
+                                    return;
+                                }
+                                Err(e) => self.notify(ToastLevel::Error, format!("Could not save DNS settings: {e}")),
+                            }
+                        }
+                    }
+                    _ => edit_input(&mut fields[active], key),
+                }
+                self.overlay = Overlay::Dns { fields, active };
                 return;
             }
             Overlay::Add(mut input) => {
@@ -886,6 +918,12 @@ impl App {
             }
             (Tab::Routing, KeyCode::Enter | KeyCode::Char(' ')) => self.toggle_rule(),
             (Tab::Routing, KeyCode::Char('i')) => self.install_preset(),
+            (Tab::Routing, KeyCode::Char('e')) => {
+                let mut fields = [TextInput::default(), TextInput::default()];
+                fields[0].insert_str(&self.cfg.dns.remote);
+                fields[1].insert_str(&self.cfg.dns.direct);
+                self.overlay = Overlay::Dns { fields, active: 0 };
+            }
             (Tab::Subscriptions, KeyCode::Enter) => self.update_subscriptions(),
             _ => {}
         }
@@ -1022,6 +1060,28 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn dns_editor_switches_fields_rejects_invalid_input_and_cancels() {
+        let mut app = app();
+        app.tab = Tab::Routing;
+        let original = app.cfg.dns.clone();
+        press(&mut app, KeyCode::Char('e'));
+        assert!(matches!(&app.overlay, Overlay::Dns { fields, active: 0 }
+            if fields[0].value() == original.remote && fields[1].value() == original.direct));
+        press(&mut app, KeyCode::Tab);
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        app.on_paste("bad resolver");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.cfg.dns, original);
+        assert!(matches!(&app.overlay, Overlay::Dns { active: 1, .. }));
+        assert!(matches!(app.toast.as_ref().map(|t| t.level), Some(ToastLevel::Error)));
+        press(&mut app, KeyCode::BackTab);
+        assert!(matches!(&app.overlay, Overlay::Dns { active: 0, .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(app.cfg.dns, original);
     }
 
     #[test]
