@@ -125,6 +125,45 @@ pub struct RoutingConfig {
     pub rules: Vec<RouteRule>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DnsConfig {
+    pub remote: String,
+    pub direct: String,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            remote: "https://1.1.1.1/dns-query".to_string(),
+            direct: "1.1.1.1".to_string(),
+        }
+    }
+}
+
+impl DnsConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_dns_address(&self.remote).map_err(|e| format!("Remote DNS: {e}"))?;
+        validate_dns_address(&self.direct).map_err(|e| format!("Direct DNS: {e}"))
+    }
+}
+
+/// Check address syntax here; transport-specific validation belongs to Xray.
+pub fn validate_dns_address(address: &str) -> Result<(), String> {
+    if address.is_empty() || address.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("address must not be empty or contain whitespace".to_string());
+    }
+    if address == "localhost" || address.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    if let Some(uri) = crate::uri::Uri::parse(address)
+        && matches!(uri.scheme.as_str(), "udp" | "tcp" | "https" | "quic" | "h3" | "tls" | "tcp+local" | "https+local")
+    {
+        return Ok(());
+    }
+    Err("expected localhost, an IP, or a supported DNS URI (udp, tcp, https, quic, h3, tls, tcp+local, https+local)".to_string())
+}
+
 /// Every section falls back to its default when missing so configs written by
 /// older or newer versions still load instead of being reset.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -133,6 +172,7 @@ pub struct AppConfig {
     pub inbounds: InboundConfig,
     pub tun: TunConfig,
     pub routing: RoutingConfig,
+    pub dns: DnsConfig,
     pub active_node_id: Option<String>,
     pub subscriptions: Vec<Subscription>,
     pub nodes: Vec<ProxyNode>,
@@ -177,6 +217,30 @@ impl Default for RoutingConfig {
 mod tests {
     use super::*;
 
+    #[test]
+    fn missing_dns_uses_defaults_and_partial_dns_keeps_other_default() {
+        let cfg: AppConfig = serde_json::from_str("{}").expect("config");
+        assert_eq!(cfg.dns.remote, "https://1.1.1.1/dns-query");
+        assert_eq!(cfg.dns.direct, "1.1.1.1");
+        let cfg: AppConfig = serde_json::from_str(r#"{"dns":{"direct":"8.8.8.8"}}"#).expect("config");
+        assert_eq!(cfg.dns.remote, DnsConfig::default().remote);
+        assert_eq!(cfg.dns.direct, "8.8.8.8");
+    }
+
+    #[test]
+    fn dns_address_validation() {
+        for addr in ["localhost", "1.1.1.1", "2001:4860:4860::8888", "udp://1.1.1.1:53",
+            "tcp://[::1]:53", "https://dns.example/dns-query", "quic://dns.example",
+            "h3://dns.example/dns-query", "tls://dns.example:853",
+            "tcp+local://1.1.1.1", "https+local://1.1.1.1/dns-query"] {
+            assert!(validate_dns_address(addr).is_ok(), "{addr}");
+        }
+        for addr in ["", " ", " 1.1.1.1", "1.1.1.1\n", "https://dns .example/dns-query",
+            "dns.example", "ftp://dns.example", "udp://", "tcp://1.1.1.1:bad"] {
+            assert!(validate_dns_address(addr).is_err(), "{addr:?}");
+        }
+    }
+
     /// Xray aborts at startup when a rule references a geo code missing from
     /// the dat files, and fresh installs only get the official geoip/geosite
     /// bundled with the Xray release. Defaults must stay within that set.
@@ -202,4 +266,3 @@ mod tests {
         }
     }
 }
-
