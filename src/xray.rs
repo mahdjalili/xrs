@@ -115,8 +115,33 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
         "settings": {}
     }));
 
-    // Build Routing Rules
-    let mut rules = Vec::new();
+    let direct_domains: Vec<_> = cfg.routing.rules.iter()
+        .filter(|rule| rule.enabled)
+        .flat_map(|rule| rule.direct_domains.iter().cloned())
+        .collect();
+    let mut dns_servers = Vec::new();
+    // An empty domains list would make the direct resolver a fallback.
+    if !direct_domains.is_empty() {
+        dns_servers.push(json!({
+            "address": cfg.dns.direct,
+            "domains": direct_domains,
+            "skipFallback": true,
+            "tag": "dns-direct"
+        }));
+    }
+    dns_servers.push(json!({ "address": cfg.dns.remote, "tag": "dns-remote" }));
+
+    // DNS dispatch rules must precede custom rules and TUN interception.
+    let mut rules = vec![
+        json!({ "type": "field", "inboundTag": ["dns-direct"], "outboundTag": "direct" }),
+        json!({ "type": "field", "inboundTag": ["dns-remote"], "outboundTag": "proxy" }),
+    ];
+    if cfg.tun.enabled {
+        outbounds.push(json!({ "tag": "dns-out", "protocol": "dns", "settings": {} }));
+        rules.push(json!({
+            "type": "field", "inboundTag": ["tun-in"], "port": 53, "outboundTag": "dns-out"
+        }));
+    }
 
     // Custom user rules from ~/.config/xrs/routes.json if present
     if let Ok(content) = fs::read_to_string(get_config_dir().join("routes.json"))
@@ -188,6 +213,7 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
         },
         "inbounds": inbounds,
         "outbounds": outbounds,
+        "dns": { "queryStrategy": "UseIP", "servers": dns_servers },
         "routing": {
             "domainStrategy": cfg.routing.domain_strategy,
             "rules": rules
@@ -1089,6 +1115,51 @@ pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_servers_and_routes_follow_enabled_direct_domains_and_tun() {
+        let node = crate::parser::parse_link("vless://uuid@example.com:443#dns", None).expect("node");
+        let mut cfg = AppConfig::default();
+        cfg.dns.remote = "https://8.8.8.8/dns-query".into();
+        cfg.dns.direct = "9.9.9.9".into();
+        let mut rule = cfg.routing.rules[0].clone();
+        rule.direct_domains = vec!["domain:example.org".into()];
+        let mut disabled = rule.clone();
+        disabled.enabled = false;
+        disabled.direct_domains = vec!["domain:disabled.example".into()];
+        cfg.routing.rules = vec![rule, disabled];
+        for tun in [false, true] {
+            cfg.tun.enabled = tun;
+            let generated = generate_xray_config(&cfg, &node);
+            assert_eq!(generated["dns"]["queryStrategy"], "UseIP");
+            let servers = generated["dns"]["servers"].as_array().expect("servers");
+            assert_eq!(servers.len(), 2);
+            assert_eq!(servers[0], json!({ "address": "9.9.9.9", "domains": ["domain:example.org"], "skipFallback": true, "tag": "dns-direct" }));
+            assert_eq!(servers[1], json!({ "address": "https://8.8.8.8/dns-query", "tag": "dns-remote" }));
+            let rules = generated["routing"]["rules"].as_array().expect("rules");
+            assert_eq!(rules[0]["inboundTag"], json!(["dns-direct"]));
+            assert_eq!(rules[0]["outboundTag"], "direct");
+            assert_eq!(rules[1]["inboundTag"], json!(["dns-remote"]));
+            assert_eq!(rules[1]["outboundTag"], "proxy");
+            assert_eq!(rules.last().expect("catch-all")["port"], "0-65535");
+            assert_eq!(rules.iter().any(|r| r["outboundTag"] == "dns-out"), tun);
+            let outbounds = generated["outbounds"].as_array().expect("outbounds");
+            assert_eq!(outbounds.iter().any(|o| o["tag"] == "dns-out" && o["protocol"] == "dns"), tun);
+            if tun {
+                assert_eq!(rules[2]["inboundTag"], json!(["tun-in"]));
+                assert_eq!(rules[2]["port"], 53);
+                for outbound in &outbounds[..2] {
+                    assert_eq!(outbound["streamSettings"]["sockopt"]["mark"], 255);
+                }
+            }
+        }
+        cfg.routing.rules[0].direct_domains.clear();
+        cfg.routing.rules[0].direct_ips = vec!["geoip:private".into()];
+        let generated = generate_xray_config(&cfg, &node);
+        assert_eq!(generated["dns"]["servers"].as_array().expect("servers").len(), 1);
+        assert_eq!(generated["dns"]["servers"][0]["tag"], "dns-remote");
+        assert!(generate_probe_config(&node, 19080, true).get("dns").is_none());
+    }
 
     #[test]
     fn probe_config_binds_localhost_socks_and_marks_when_tun_up() {

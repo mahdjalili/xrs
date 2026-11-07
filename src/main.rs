@@ -66,6 +66,11 @@ enum Commands {
         #[command(subcommand)]
         action: RouteAction,
     },
+    /// Show or configure remote and direct DNS resolvers
+    Dns {
+        #[command(subcommand)]
+        action: Option<DnsAction>,
+    },
     /// Manage subscriptions
     Sub {
         #[command(subcommand)]
@@ -83,6 +88,17 @@ enum Commands {
     },
     /// Download and install the Xray-core binary and its official geo routing data
     InstallXray,
+}
+
+#[derive(Subcommand)]
+enum DnsAction {
+    /// Update either or both resolvers and apply changes when connected
+    Set {
+        #[arg(long, required_unless_present = "direct")]
+        remote: Option<String>,
+        #[arg(long)]
+        direct: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -387,6 +403,22 @@ fn main() -> Result<()> {
                 println!("\nUsage: xrs tun on | off");
             }
         },
+        Some(Commands::Dns { action }) => {
+            if let Some(DnsAction::Set { remote, direct }) = action {
+                let mut dns = cfg.dns.clone();
+                if let Some(remote) = remote { dns.remote = remote; }
+                if let Some(direct) = direct { dns.direct = direct; }
+                dns.validate().map_err(|e| eyre!(e))?;
+                cfg.dns = dns;
+                save_config(&cfg).map_err(|e| eyre!(e))?;
+                if XrayRunner::is_running() {
+                    XrayRunner::restart(&cfg).map_err(|e| eyre!(e))?;
+                    println!("Restarted xrs to apply DNS changes.");
+                }
+            }
+            println!("Remote DNS: {}", cfg.dns.remote);
+            println!("Direct DNS: {}", cfg.dns.direct);
+        }
         Some(Commands::Route { action }) => match action {
             RouteAction::List => {
                 println!("{}", "Routing Rules:".bold());
@@ -952,6 +984,8 @@ fn show_status(cfg: &AppConfig, json_output: bool) {
             "http_port": cfg.inbounds.http_port,
             "tun_enabled": cfg.tun.enabled,
             "tun_interface": cfg.tun.name,
+            "remote_dns": cfg.dns.remote,
+            "direct_dns": cfg.dns.direct,
             "active_rules": active_rules,
             "nodes": nodes,
             "rules": rules_json
@@ -972,6 +1006,8 @@ fn show_status(cfg: &AppConfig, json_output: bool) {
     println!("Active Node:  {}", active_node.cyan().bold());
     println!("SOCKS5 Port:  127.0.0.1:{}", cfg.inbounds.socks_port);
     println!("HTTP Port:    127.0.0.1:{}", cfg.inbounds.http_port);
+    println!("Remote DNS:   {}", cfg.dns.remote);
+    println!("Direct DNS:   {}", cfg.dns.direct);
     println!(
         "TUN Mode:     {}",
         if cfg.tun.enabled { format!("ON ({})", cfg.tun.name).green().bold() } else { "OFF".dimmed() }
@@ -1123,4 +1159,22 @@ fn install_iran_geodata() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn dns_cli_accepts_show_and_partial_or_complete_updates() {
+        for args in [
+            vec!["xrs", "dns"],
+            vec!["xrs", "dns", "set", "--remote", "https://1.1.1.1/dns-query"],
+            vec!["xrs", "dns", "set", "--direct", "8.8.8.8"],
+            vec!["xrs", "dns", "set", "--remote", "localhost", "--direct", "1.1.1.1"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(Cli::try_parse_from(["xrs", "dns", "set"]).is_err());
+    }
 }

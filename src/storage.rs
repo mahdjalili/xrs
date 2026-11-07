@@ -348,5 +348,14 @@ mod tests {
         assert_eq!(cfg.active_node_id.as_deref(), Some("x"));
         assert_eq!(cfg.inbounds.socks_port, 10808);
         assert!(!cfg.routing.rules.is_empty());
+        assert_eq!(cfg.dns, crate::model::DnsConfig::default());
+        let original = node("vless://u@fi.example.net:443#FI1");
+        let cfg: AppConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [original], "active_node_id": "x", "inbounds": { "socks_port": 12345 }
+        })).expect("old config");
+        assert_eq!(cfg.nodes.len(), 1);
+        assert_eq!(cfg.nodes[0].server, "fi.example.net");
+        assert_eq!(cfg.inbounds.socks_port, 12345);
+        assert_eq!(cfg.dns, crate::model::DnsConfig::default());
     }
 }
