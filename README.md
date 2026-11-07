@@ -89,6 +89,8 @@ xrs install-xray   # fetches the latest Xray engine + official geo data (first r
 
 No root needed on Linux; everything lives in your home directory. TUN mode's one-time setup (file capabilities + passwordless sudo for routing) runs automatically the first time it starts.
 
+`xrs install-xray` fetches the latest published Xray-core release (including prereleases) for your OS and architecture: Linux or macOS, AMD64 or ARM64. It requires a successful GitHub release lookup—there is no pinned-version fallback—and validates the downloaded executable before replacing the installed core. Existing Iran-preset routing data is preserved.
+
 macOS binaries are unsigned (no Apple developer certificate), so Gatekeeper may block the first launch — right-click → Open once, or clear the flag with `xattr -d com.apple.quarantine xrs`. Every release tarball is signed with Sigstore keyless (cosign), so downloads can still be verified.
 
 ## For developers

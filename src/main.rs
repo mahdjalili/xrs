@@ -2,6 +2,7 @@
 #![deny(clippy::unwrap_used)]
 
 mod latency;
+mod installer;
 mod logging;
 mod model;
 mod parser;
@@ -18,7 +19,7 @@ use colored::*;
 use model::{AppConfig, RouteRule};
 use storage::*;
 use log::{error, info, warn};
-use xray::{check_or_setup_tun_caps, find_xray_binary, tun_interface_up, XrayRunner};
+use xray::{find_xray_binary, tun_interface_up, XrayRunner};
 
 #[derive(Parser)]
 #[command(
@@ -835,7 +836,7 @@ fn main() -> Result<()> {
             }
         },
         Some(Commands::InstallXray) => {
-            install_xray_and_assets()?;
+            installer::install_xray_and_assets()?;
         }
     }
 
@@ -1015,120 +1016,6 @@ fn show_status(cfg: &AppConfig, json_output: bool) {
     println!("Active Rules: {}", if active_rules.is_empty() { "None".dimmed() } else { active_rules.join(", ").green() });
     println!("Total Nodes:  {}", cfg.nodes.len());
     println!("Subscriptions:{}", cfg.subscriptions.len());
-}
-
-/// Fallback when the GitHub API is unreachable. Keep this equal to the newest
-/// known Xray-core tag (including prereleases — that is how Xray ships).
-const XRAY_FALLBACK_TAG: &str = "v26.9.30";
-
-fn xray_linux_asset() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "Xray-linux-arm64-v8a.zip",
-        _ => "Xray-linux-64.zip",
-    }
-}
-
-fn latest_xray_release_tag() -> Option<String> {
-    let resp = ureq::get("https://api.github.com/repos/XTLS/Xray-core/releases")
-        .header("User-Agent", concat!("xrs/", env!("CARGO_PKG_VERSION")))
-        .call()
-        .ok()?;
-    let body = resp.into_body().read_to_string().ok()?;
-    let releases: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
-    releases
-        .into_iter()
-        .find(|r| r.get("draft").and_then(|d| d.as_bool()) != Some(true))
-        .and_then(|r| r.get("tag_name")?.as_str().map(str::to_string))
-}
-
-fn install_xray_and_assets() -> Result<()> {
-    let data_dir = get_data_dir();
-    std::fs::create_dir_all(&data_dir)?;
-
-    let tag = latest_xray_release_tag().unwrap_or_else(|| {
-        warn!("Could not resolve latest Xray-core tag; using {XRAY_FALLBACK_TAG}");
-        XRAY_FALLBACK_TAG.to_string()
-    });
-    let asset = xray_linux_asset();
-    let xray_url = format!("https://github.com/XTLS/Xray-core/releases/download/{tag}/{asset}");
-
-    println!("{}", format!("1. Downloading Xray-core {tag} ({asset})...").cyan());
-    let zip_dest = data_dir.join("xray.zip");
-
-    let status = std::process::Command::new("curl")
-        .args(["-L", "-f", "-o", &zip_dest.to_string_lossy(), &xray_url])
-        .status()?;
-    if !status.success() {
-        return Err(eyre!("Failed to download Xray-core release ({tag})."));
-    }
-
-    println!("{}", "2. Extracting Xray binary and geo routing data...".cyan());
-    // The release zip ships the official geoip/geosite data. Keep the
-    // chocolate4u data untouched when the opt-in Iran preset is in use:
-    // replacing it would fatally break the preset's geo lookups at startup.
-    let iran_preset_on = load_config()
-        .routing
-        .rules
-        .iter()
-        .any(|r| r.id == "iran_bypass" && r.enabled);
-    let mut unzip_args = vec![
-        "-o".to_string(),
-        zip_dest.to_string_lossy().to_string(),
-        "xray".to_string(),
-    ];
-    if iran_preset_on {
-        println!("{}", "   Iran routing preset is enabled — keeping its chocolate4u routing data.".cyan());
-    } else {
-        unzip_args.push("geoip.dat".to_string());
-        unzip_args.push("geosite.dat".to_string());
-    }
-    unzip_args.push("-d".to_string());
-    unzip_args.push(data_dir.to_string_lossy().to_string());
-    let status = std::process::Command::new("unzip")
-        .args(&unzip_args)
-        .status()?;
-    if !status.success() {
-        return Err(eyre!("Failed to unzip Xray binary."));
-    }
-    let _ = std::fs::remove_file(zip_dest);
-
-    // Make xray executable
-    let xray_path = data_dir.join("xray");
-    let status = std::process::Command::new("chmod")
-        .args(["+x", &xray_path.to_string_lossy()])
-        .status()?;
-    if !status.success() {
-        return Err(eyre!("Failed to set executable permissions on Xray binary."));
-    }
-
-    // Replacing the binary silently drops its file capabilities, which would
-    // make every later TUN connect prompt for auth again. Re-grant them now,
-    // while the user is right here (only when TUN mode is in use).
-    if load_config().tun.enabled
-        && let Err(e) = check_or_setup_tun_caps(&xray_path)
-    {
-        warn!("Could not restore TUN capabilities after the update: {e}");
-    }
-
-    // Report the installed binary version when possible.
-    let ver = std::process::Command::new(&xray_path)
-        .arg("version")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.lines().next().map(str::to_string))
-        .unwrap_or_else(|| tag.clone());
-
-    println!("{}", "✔ Xray core installed successfully!".green().bold());
-    println!("  Version:  {}", ver.cyan());
-    println!("  Location: {}", data_dir.display());
-    if iran_preset_on {
-        println!("  Iran routing preset stays installed (data: chocolate4u).");
-    } else {
-        println!("  Optional: Iran routing rules via '{}'", "xrs route setup-iran".cyan());
-    }
-
-    Ok(())
 }
 
 /// Downloads the chocolate4u Iran routing data over the dat files in the data
