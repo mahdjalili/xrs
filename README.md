@@ -51,7 +51,7 @@ The ~4.6 MB idle figure is the xrs TUI on its own. A connected session also runs
 - **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://`, or `ss://` link, or point at a subscription URL and let it sync.
 - **🌐 DNS you control:** set remote (proxied) and direct resolvers with `xrs dns`, or press `e` on the Routing tab.
 - **🔄 Runs in the background when you ask:** `xrs start` installs, enables, and starts a systemd user service, so the proxy keeps running after the terminal closes — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it. Opening the interactive TUI alone starts nothing.
-- **🧩 Bar widget:** an optional native top-bar dropdown with an on/off switch, one-click server switching, and quick actions.
+- **🧩 Omarchy bar widget:** [omaxrs](https://github.com/mahdjalili/omaxrs) provides an optional native top-bar dropdown with an on/off switch, one-click server switching, and quick actions.
 
 ## Quick start
 
@@ -92,6 +92,10 @@ No root needed on Linux; everything lives in your home directory. TUN mode's one
 `xrs install-xray` fetches the latest published Xray-core release (including prereleases) for your OS and architecture: Linux or macOS, AMD64 or ARM64. It requires a successful GitHub release lookup—there is no pinned-version fallback—and validates the downloaded executable before replacing the installed core. Existing Iran-preset routing data is preserved.
 
 macOS binaries are unsigned (no Apple developer certificate), so Gatekeeper may block the first launch — right-click → Open once, or clear the flag with `xattr -d com.apple.quarantine xrs`. Every release tarball is signed with Sigstore keyless (cosign), so downloads can still be verified.
+
+## Omarchy plugin
+
+The Omarchy bar plugin is maintained separately in [omaxrs](https://github.com/mahdjalili/omaxrs). Visit that repository for the plugin source, requirements, and installation instructions. It uses the xrs CLI and requires xrs to be installed.
 
 ## For developers
 
