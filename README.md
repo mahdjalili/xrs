@@ -99,10 +99,44 @@ The Omarchy bar plugin is maintained separately in [omaxrs](https://github.com/m
 
 ## For developers
 
+SOCKS and TUN inbounds sniff HTTP Host and TLS SNI for routing with
+`routeOnly: true`: the original connection destination is preserved. This
+supports services whose SNI is an internal routing name (for example,
+`kube-teleport-proxy-alpn.teleport.example.com`) rather than a resolvable
+connection endpoint. A direct-domain rule alone cannot prevent destination
+rewriting when `routeOnly` is disabled. TLS verification is unchanged.
+
+Domain rules still select direct, proxy, or block outbounds. DNS interception,
+resolver selection, and the configured routing `domainStrategy` are unchanged;
+strategies such as `IPIfNonMatch` may still resolve sniffed names for IP rule
+matching. Direct connections to IPs no longer resolve the sniffed hostname via
+the freedom outbound; proxies receive the original IP or requested hostname.
+This means clients need a usable original destination: remote DNS resolution
+of sniffed names can no longer compensate for a poisoned or unreachable local
+DNS answer. SOCKS clients can request a hostname when proxy-side resolution is
+needed.
+
+xrs does not currently configure FakeDNS pools or the `fakedns` sniffer, and its
+DNS address validator does not accept the `fakedns` resolver. Future FakeDNS
+support must restore synthetic IPs to domains rather than dial them. Xray
+26.9.30 explicitly exempts FakeDNS results and recognized fake IPs from
+`routeOnly` destination preservation; see the
+[dispatcher implementation](https://github.com/XTLS/Xray-core/blob/v26.9.30/app/dispatcher/default.go)
+and [sniffing reference](https://xtls.github.io/en/config/inbound.html#sniffingobject).
+
 ```bash
 cargo build --release      # optimized binary at target/release/xrs
 cargo clippy               # lint gate: no unwrap(), no unsafe code
+cargo test --locked
+# Optional loopback integration test (Python 3 + an existing Xray binary):
+XRAY_TEST_BINARY=/path/to/xray cargo test --locked tls_sni_preserves_destination -- --ignored --nocapture
 ```
+
+The optional test uses generated SOCKS settings and a real TLS ClientHello to
+check domain routing and original destination preservation through direct and
+SOCKS proxy outbounds, under `AsIs` and `IPIfNonMatch`. It does not complete a
+TLS handshake or exercise privileged TUN networking. Generated SOCKS and TUN
+sniffing settings are also covered by the ordinary unit tests.
 
 Tagged `v*` pushes build signed Linux (`amd64` + `arm64`) and macOS (`amd64` + `arm64`) tarballs via GitHub Actions and publish them as releases. See [`.github/workflows/build.yml`](.github/workflows/build.yml).
 
