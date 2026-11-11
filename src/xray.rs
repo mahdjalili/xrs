@@ -45,6 +45,8 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 }
 
 pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
+    // SNI/Host can be an application routing name rather than a dialable
+    // destination. Keep it for routing without replacing the client's target.
     let mut inbounds = vec![
         json!({
             "tag": "socks-in",
@@ -57,7 +59,8 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
             },
             "sniffing": {
                 "enabled": true,
-                "destOverride": ["http", "tls"]
+                "destOverride": ["http", "tls"],
+                "routeOnly": true
             }
         }),
         json!({
@@ -83,7 +86,8 @@ pub fn generate_xray_config(cfg: &AppConfig, node: &ProxyNode) -> Value {
             },
             "sniffing": {
                 "enabled": true,
-                "destOverride": ["http", "tls"]
+                "destOverride": ["http", "tls"],
+                "routeOnly": true
             }
         }));
     }
@@ -1115,6 +1119,61 @@ pub fn set_system_proxy(enable: bool, socks_port: u16, http_port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sniffing_routes_without_overriding_destinations() {
+        let mut node = crate::parser::parse_link("vless://uuid@192.0.2.10:1080#test", None).expect("node");
+        node.protocol = Protocol::Socks5;
+        let mut cfg = AppConfig::default();
+        for tun in [false, true] {
+            cfg.tun.enabled = tun;
+            for strategy in ["AsIs", "IPIfNonMatch"] {
+                cfg.routing.domain_strategy = strategy.into();
+                let generated = generate_xray_config(&cfg, &node);
+                let inbounds = generated["inbounds"].as_array().expect("inbounds");
+                assert_eq!(inbounds.len(), if tun { 3 } else { 2 });
+                for inbound in inbounds {
+                    match inbound["tag"].as_str().expect("tag") {
+                        "socks-in" | "tun-in" => assert_eq!(inbound["sniffing"], json!({
+                            "enabled": true,
+                            "destOverride": ["http", "tls"],
+                            "routeOnly": true
+                        })),
+                        "http-in" => assert!(inbound.get("sniffing").is_none()),
+                        tag => panic!("unexpected inbound {tag}"),
+                    }
+                }
+                assert_eq!(generated["routing"]["domainStrategy"], strategy);
+                assert!(generated.get("fakedns").is_none());
+                assert_eq!(generated["outbounds"][0]["protocol"], "socks");
+                assert_eq!(generated["outbounds"][1]["settings"]["domainStrategy"], "UseIP");
+            }
+        }
+        assert!(generate_probe_config(&node, 19080, false)["inbounds"][0].get("sniffing").is_none());
+    }
+
+    /// Optional, unprivileged core integration test. No live TUN or external
+    /// endpoints: XRAY_TEST_BINARY=/path/to/xray cargo test --locked
+    /// tls_sni_preserves_destination -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires XRAY_TEST_BINARY and python3"]
+    fn tls_sni_preserves_destination() {
+        use std::io::Write;
+        let binary = std::env::var("XRAY_TEST_BINARY").expect("set XRAY_TEST_BINARY");
+        let mut node = crate::parser::parse_link("vless://uuid@192.0.2.10:1080#test", None).expect("node");
+        node.protocol = Protocol::Socks5;
+        let mut cfg = AppConfig::default();
+        cfg.routing.rules.clear();
+        let generated = generate_xray_config(&cfg, &node);
+        let mut child = Command::new("python3")
+            .args(["-c", include_str!("../tests/sniffing.py"), &binary])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("start integration harness");
+        child.stdin.take().expect("stdin")
+            .write_all(generated.to_string().as_bytes()).expect("write generated config");
+        assert!(child.wait().expect("integration harness").success());
+    }
 
     #[test]
     fn dns_servers_and_routes_follow_enabled_direct_domains_and_tun() {
