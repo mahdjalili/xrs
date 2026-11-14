@@ -143,3 +143,65 @@ Tagged `v*` pushes build signed Linux (`amd64` + `arm64`) and macOS (`amd64` + `
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+### Linux TUN system DNS
+
+TUN mode requires an active `systemd-resolved.service` and `resolvectl`.
+XRS configures only the TUN link it creates, after Xray startup and policy
+routing succeed: DNS destination `1.1.1.1`, routing domain `~.`, and
+`DefaultRoute=yes`, disables DNS-over-TLS on that link so queries enter the
+port-53 interception rule, then flushes resolved's cache. `1.1.1.1` is an interception
+destination on port 53, not a replacement for the configured upstream:
+Xray's `tun-in` port-53 rule precedes custom/private-IP bypass rules and
+sends queries to `dns-out`. Xray's existing remote/direct DNS selection,
+Iran preset, and custom routing rules remain in effect. There is no DNS
+listener assumed at `172.19.0.1`.
+
+Setup failure aborts the connection and attempts rollback. Disconnect and
+service SIGTERM shutdown remove the core/TUN and flush the cache; a journal
+in the XRS state directory permits cleanup after interrupted activation or
+abnormal termination on the next start. Only a surviving TUN with the recorded
+name and kernel interface index is reverted. Deleted links lose resolved's
+per-link state automatically. Cleanup failures are reported and retained for
+retry. Reconnects and the daemon's missing-interface recovery reapply setup.
+A preexisting interface with the requested name is rejected to avoid taking
+over another program's DNS configuration. One-time TUN privilege setup now
+also covers `resolvectl`; failed sudo falls back to polkit elevation with a
+bounded wait. Check sudo/polkit permissions when running headlessly.
+
+XRS does not modify physical-link DNS, `/etc/resolv.conf`, or NetworkManager
+profiles. The system resolver must already use resolved (for example via its
+stub or NSS); merely running resolved does not prove all applications use it.
+`~.` is a default DNS routing domain, **not complete leak prevention**:
+more-specific corporate/split-DNS domains still win, and another link with
+`~.` can receive queries too. Application-specific DoH/DoT and applications
+using their own resolvers are outside this integration. SOCKS/HTTP-only mode
+retains its existing behavior. macOS has no systemd-resolved and XRS's TUN
+routing is Linux-specific; macOS TUN now reports this explicitly. Use proxy
+mode there; no macOS resolver rewrite is attempted.
+
+Real-machine verification (requires Linux, resolved, and a working node):
+
+1. Connect with TUN enabled. Substitute the configured interface name below
+   if it differs from `xrs-tun`.
+2. Run `resolvectl status xrs-tun`. Confirm DNS `1.1.1.1`, domain `~.`, and
+   default route enabled. Record `resolvectl status enp2s0` before/after and
+   confirm XRS did not change physical-link DNS.
+3. Run `resolvectl query --cache=no www.youtube.com` (if `--cache=no` is
+   unsupported, run `sudo resolvectl flush-caches` before querying).
+4. Confirm the query reports link `xrs-tun` and public addresses rather than
+   the observed private filtering addresses. Also test an AAAA query on an
+   IPv6-capable network. Inspect other routing domains if another link wins.
+5. Run `curl --noproxy '*' -I https://www.youtube.com` with proxy environment
+   variables unset; confirm a normal HTTPS request succeeds.
+6. Test a configured direct domain (including the Iran preset if enabled)
+   and inspect Xray routing with temporary debug logging if needed; confirm
+   both DNS and the connection still take the intended direct path. Test a
+   corporate split-DNS name separately; its more-specific link should win.
+7. Disconnect. Confirm the TUN's resolved state disappears, the physical
+   DNS is unchanged, and uncached queries use the original network resolver.
+8. Reconnect, switch nodes, and run `systemctl --user restart xrs.service`;
+   repeat steps 2–5. Stop the service and verify teardown. In a controlled
+   test, terminate it abnormally and start it again to verify journal
+   recovery. Test unavailable resolved and denied elevation: startup must
+   report an error rather than claim working TUN DNS.

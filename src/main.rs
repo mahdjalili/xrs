@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used)]
 
+mod resolved;
 mod latency;
 mod installer;
 mod logging;
