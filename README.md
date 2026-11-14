@@ -10,6 +10,8 @@
 [![Build](https://github.com/mahdjalili/xrs/actions/workflows/build.yml/badge.svg?event=push)](https://github.com/mahdjalili/xrs/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/mahdjalili/xrs)](LICENSE)
 
+[Install](#install) · [Quick start](#quick-start) · [Features](#features) · [Omarchy plugin](#omarchy-plugin) · [Development](#for-developers)
+
 ![xrs terminal interface](assets/tui.png)
 
 xrs is a proxy client built on Xray-core that lives in your terminal and sips memory. Connect, switch servers, and manage routing in seconds — no heavyweight GUI, no runtime bloat, nothing left running but the proxy itself.
@@ -51,7 +53,7 @@ The ~4.6 MB idle figure is the xrs TUI on its own. A connected session also runs
 - **🔗 Links & subscriptions:** paste a single `vless://`, `vmess://`, `trojan://`, or `ss://` link, or point at a subscription URL and let it sync.
 - **🌐 DNS you control:** set remote (proxied) and direct resolvers with `xrs dns`, or press `e` on the Routing tab.
 - **🔄 Runs in the background when you ask:** `xrs start` installs, enables, and starts a systemd user service, so the proxy keeps running after the terminal closes — across logins, and across reboots where lingering is enabled. `xrs stop` stops it, `xrs service uninstall` removes it. Opening the interactive TUI alone starts nothing.
-- **🧩 Omarchy bar widget:** [omaxrs](https://github.com/mahdjalili/omaxrs) provides an optional native top-bar dropdown with an on/off switch, one-click server switching, and quick actions.
+- **🧩 Omarchy plugin:** control xrs from your desktop bar with [omaxrs](https://github.com/mahdjalili/omaxrs).
 
 ## Quick start
 
@@ -95,7 +97,7 @@ macOS binaries are unsigned (no Apple developer certificate), so Gatekeeper may 
 
 ## Omarchy plugin
 
-The Omarchy bar plugin is maintained separately in [omaxrs](https://github.com/mahdjalili/omaxrs). Visit that repository for the plugin source, requirements, and installation instructions. It uses the xrs CLI and requires xrs to be installed.
+[omaxrs](https://github.com/mahdjalili/omaxrs) is an optional Omarchy Quattro bar plugin for xrs, with connection controls and server switching. See its README for installation.
 
 ## For developers
 
