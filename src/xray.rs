@@ -499,6 +499,15 @@ impl XrayRunner {
             return Ok(pid);
         }
 
+        // Recover a previous interrupted activation before creating a new link.
+        crate::resolved::cleanup()?;
+        if cfg.tun.enabled {
+            crate::resolved::preflight()?;
+            if !is_valid_ifname(&cfg.tun.name) || tun_interface_up(&cfg.tun.name) {
+                return Err("TUN interface name is invalid or already exists; refusing to change an interface not created by this start".into());
+            }
+        }
+
         // A dangling active id (e.g. the node vanished in a subscription
         // update) falls back to the first node instead of refusing to start.
         let node = cfg
@@ -569,22 +578,42 @@ impl XrayRunner {
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        let _ = fs::write(Self::pid_file(), pid.to_string());
-
-        // Reap the child when it exits. In a long-lived parent such as the TUI
-        // an unreaped child lingers as a zombie that still looks "running".
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-
+        let setup = setup_tun(
+            cfg.tun.enabled,
+            &cfg.tun.name,
+            cfg.tun.mtu,
+            |name, mtu| apply_tun_routing(name, mtu, true),
+            crate::resolved::activate,
+        );
         if cfg.tun.enabled {
-            if let Err(e) = apply_tun_routing(&cfg.tun.name, cfg.tun.mtu, true) {
-                let _ = Self::stop();
-                return Err(format!("TUN routing failed: {e}. Connect once from a terminal so the one-time setup can finish."));
+            if let Err(e) = setup {
+                let _ = child.kill();
+                let _ = child.wait();
+                let cleanup = crate::resolved::cleanup();
+                let _ = apply_tun_routing(&cfg.tun.name, 0, false);
+                return Err(format!("TUN activation failed: {e}; DNS cleanup: {cleanup:?}"));
             }
         } else {
             set_system_proxy(true, cfg.inbounds.socks_port, cfg.inbounds.http_port);
         }
+
+        if let Ok(Some(status)) = child.try_wait() {
+            let cleanup = crate::resolved::cleanup();
+            let _ = apply_tun_routing(&cfg.tun.name, 0, false);
+            return Err(format!("Xray exited during TUN setup ({status}); DNS cleanup: {cleanup:?}"));
+        }
+
+        // Publish readiness only after routes and system DNS are installed.
+        if let Err(e) = fs::write(Self::pid_file(), pid.to_string()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = crate::resolved::cleanup();
+            let _ = apply_tun_routing(&cfg.tun.name, 0, false);
+            return Err(format!("Cannot record Xray PID: {e}"));
+        }
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
 
         Ok(pid)
     }
@@ -603,17 +632,37 @@ impl XrayRunner {
             let _ = fs::remove_file(Self::pid_file());
         }
 
+        // Deleting the nonpersistent TUN removes its per-link DNS settings.
+        let dns_cleanup = crate::resolved::cleanup();
+        if let Err(ref e) = dns_cleanup {
+            log::error!("TUN DNS cleanup failed: {e}");
+        }
         // Remove TUN routing and disable system proxy
         let _ = apply_tun_routing("xrs-tun", 0, false);
         set_system_proxy(false, 10808, 10809);
-        Ok(())
+        dns_cleanup
     }
 
     pub fn restart(cfg: &AppConfig) -> Result<u32, String> {
-        let _ = Self::stop();
+        Self::stop()?;
         std::thread::sleep(std::time::Duration::from_millis(150));
         Self::start(cfg)
     }
+}
+
+/// Keep DNS mutations after successful routing, and out of proxy-only starts.
+fn setup_tun(
+    enabled: bool,
+    name: &str,
+    mtu: u32,
+    mut routes: impl FnMut(&str, u32) -> Result<(), String>,
+    mut dns: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if enabled {
+        routes(name, mtu)?;
+        dns(name)?;
+    }
+    Ok(())
 }
 
 const STARTUP_GRACE: Duration = Duration::from_millis(400);
@@ -710,7 +759,7 @@ const TUN_TABLE: u32 = 1001;
 const TUN_MARK: u32 = 255;
 const TUN_ADDR: &str = "172.19.0.1/30";
 
-fn is_valid_ifname(name: &str) -> bool {
+pub(crate) fn is_valid_ifname(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 15
         && name
@@ -733,7 +782,7 @@ const TOOL_DIRS: [&str; 4] = ["/usr/bin", "/usr/sbin", "/bin", "/sbin"];
 
 /// Absolute path of a routing tool; falls back to /usr/bin/<name> (covered by
 /// the sudoers rule) when nothing resolves, so the failure mode is unchanged.
-fn resolve_tool(name: &str) -> String {
+pub(crate) fn resolve_tool(name: &str) -> String {
     TOOL_DIRS
         .iter()
         .map(|dir| Path::new(dir).join(name))
@@ -868,7 +917,8 @@ fn tun_down_commands() -> Vec<TunCmd> {
 fn tun_batch_shell(ifname: &str, mtu: u32, up: bool) -> String {
     if up {
         format!(
-            r#"for i in $(seq 1 20); do ip link show "{ifname}" >/dev/null 2>&1 && break; sleep 0.1; done
+            r#"set -e
+for i in $(seq 1 20); do ip link show "{ifname}" >/dev/null 2>&1 && break; sleep 0.1; done
 ip link set dev "{ifname}" up mtu {mtu}
 ip addr replace {addr} dev "{ifname}"
 ip route replace default dev "{ifname}" table {table}
@@ -1026,19 +1076,19 @@ fn tun_sudoers_current() -> bool {
     sudoers_current_in(Path::new("/etc/sudoers.d"), &get_state_dir(), &user)
 }
 
-/// One rule line covering every path resolve_tool can pick for `ip` and
-/// `sysctl` across distros. Must stay in sync with TOOL_DIRS: a command path
+/// One rule line covering every path resolve_tool can pick for `ip`,
+/// `sysctl`, and `resolvectl` across distros. Must stay in sync with TOOL_DIRS: a command path
 /// the rule misses makes `sudo -n` fail and drops TUN routing into a pkexec
 /// password prompt on every connect, switch, and restart.
 fn sudoers_content(user: &str) -> String {
     let mut entries: Vec<String> = Vec::new();
-    for tool in ["ip", "sysctl"] {
+    for tool in ["ip", "sysctl", "resolvectl"] {
         for dir in TOOL_DIRS {
             entries.push(format!("{dir}/{tool} *"));
         }
     }
     format!(
-        "# xrs TUN routing - passwordless ip/sysctl for TUN mode (installed by xrs)\n{user} ALL=(root) NOPASSWD: {}\n",
+        "# xrs TUN routing - passwordless ip/sysctl/resolvectl for TUN mode (installed by xrs)\n{user} ALL=(root) NOPASSWD: {}\n",
         entries.join(", ")
     )
 }
@@ -1296,6 +1346,21 @@ mod tests {
     }
 
     #[test]
+    fn tun_dns_lifecycle_orders_routes_and_skips_proxy_only_mode() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(Vec::new());
+        for _ in 0..3 {
+            setup_tun(true, "custom-tun", 1400, |name, mtu| {
+                assert_eq!((name, mtu), ("custom-tun", 1400));
+                calls.borrow_mut().push("routes"); Ok(())
+            }, |name| { assert_eq!(name, "custom-tun"); calls.borrow_mut().push("dns"); Ok(()) }).expect("reconnect");
+        }
+        assert_eq!(*calls.borrow(), ["routes", "dns", "routes", "dns", "routes", "dns"]);
+        setup_tun(false, "custom-tun", 1400, |_, _| panic!("proxy-only routes"), |_| panic!("proxy-only DNS")).expect("proxy only");
+        assert!(setup_tun(true, "custom-tun", 1400, |_, _| Err("privilege failure".into()), |_| panic!("DNS before routing ready")).is_err());
+    }
+
+    #[test]
     fn tun_setup_uses_configured_mtu() {
         let cmds = tun_up_commands("xrs-tun", 1400);
         assert!(cmds[0].args.iter().any(|a| a == "1400"));
@@ -1322,7 +1387,7 @@ mod tests {
     #[test]
     fn sudoers_rule_covers_every_candidate_tool_path() {
         let content = sudoers_content("mahdi");
-        for tool in ["ip", "sysctl"] {
+        for tool in ["ip", "sysctl", "resolvectl"] {
             for dir in TOOL_DIRS {
                 assert!(content.contains(&format!("{dir}/{tool} *")), "rule misses {dir}/{tool}");
             }
